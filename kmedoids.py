@@ -1,5 +1,12 @@
-from scipy.sparse import csr_matrix
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov 12 12:01:34 2020
+
+@author: richardcouperthwaite
+"""
+
 import numpy as np
+from scipy.sparse import csr_matrix
 import random
 
 class KMedoids:
