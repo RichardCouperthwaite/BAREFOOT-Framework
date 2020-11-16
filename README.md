@@ -1,15 +1,16 @@
-# Batch Bayesian Optimization
-## Implemented within a Model Reification and Fusion Framework
+# BAREFOOT (Batch Reification/Fusion Optimization) Framework
+## Batch Bayesian Optimization implemented within a Model Reification and Fusion Framework
 
-The code in this repository can be used to run a batch bayesian optimization routine using a 2D toy problem involving the reification and fusion of three reduced-order mechanical models to predict the output of a RVE Mechanical Property model.
+This framework combines the Reification/Fusion framework developed by Thomison and Allaire<sup>1</sup> with the Batch Bayesian Optimization approach proposed by Joy et al.<sup>2</sup>. The general overview of the framework is shown in the figure below. The description of this framework and how it operates can be found in articles published in the literature<sup>3,4</sup>.
 
-Two versions of the code are currently in this repository. These two codes are explained below:
+![BAREFOOT Framework](BAREFOOT.png)
 
-### Cost Constrained - Cost Controlled (CC_CC_optimization.py)
-This version of the code has been manipulated to allow for running the code constraining the total cost as well as calling the truth model only after a certain budget allocation has been spent. 
 
-### Cost Constrained - Iteration Controlled (CC_IC_optimization.py)
-This version of the code runs the case study where the optimization terminates after a certain budget allocation has been met, or when a certain number of iterations have been completed. The second criteria in this code is that the truth model is called after a fixed number of iterations.
+
+
+
+
+
 
 To run the code, the following python packages will need to be installed:
 - pandas
@@ -20,7 +21,7 @@ To run the code, the following python packages will need to be installed:
 - george
 - matplotlib
 
-Both versions of the code take command line inputs to specify the different limits that will be used in the code, these are input as an ordered list:
+There are several command line inputs that are required by the code, these are described below and an example of the function call is shown after the descriptions:
 1. GP Kernel to be used ('M52', 'M32', 'SE')
 2. The total number of iterations to completed
 3. The number of test samples to use (these are found using a latin-hypercube sampling of the design space
@@ -29,6 +30,7 @@ Both versions of the code take command line inputs to specify the different limi
 6. The number of iterations to run before calling the truth model
 7. The total budget that can be expended before stopping the code
 8. The budget that must be expended before calling the truth model
+9. additional ..
 
 The code is set up to run an example problem if no additional inputs are entered. This example code will run for two iterations. The example code is equivalent to entering the following run command:
 
