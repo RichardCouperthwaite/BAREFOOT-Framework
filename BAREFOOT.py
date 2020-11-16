@@ -940,7 +940,7 @@ def batch_optimization_v2(param, ndim, fused_points, initial_data, models, low_b
             tm_iter_count = 0
             max_new = 0
             
-            tm_test = lhs(ndim, samples=5000)
+            tm_test = lhs(ndim, samples=5000*ndim)
                       
             processes = []
             # Initiate the worker processes

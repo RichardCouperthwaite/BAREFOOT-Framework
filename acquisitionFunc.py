@@ -90,8 +90,8 @@ def knowledge_gradient(M, sn, mu, sigma):
     return nu_star, x_star, NU
 
 def expected_improvement(curr_max, xi, y, std):
-    pdf = norm.pdf(y)
-    cdf = norm.cdf(y)
+    pdf = norm.pdf((y-curr_max-xi)/std)
+    cdf = norm.cdf((y-curr_max-xi)/std)
     
     EI = (y-curr_max-xi)*pdf + std*cdf
     
@@ -99,3 +99,22 @@ def expected_improvement(curr_max, xi, y, std):
     x_star = np.where(EI == max_val)[0]
     
     return max_val, x_star[0], EI
+
+
+def probability_improvement(curr_max, xi, y, std):
+    PI = norm.cdf((y-curr_max-xi)/std)
+    
+    max_val = np.max(PI)
+    x_star = np.where(PI == max_val)[0]
+    
+    return max_val, x_star[0], PI
+
+
+def upper_conf_bound(kappa, y, std):
+    UCB = y + kappa*std
+    
+    max_val = np.max(UCB)
+    x_star = np.where(UCB == max_val)[0]
+    
+    return max_val, x_star[0], UCB
+
