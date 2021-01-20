@@ -1,3 +1,4 @@
 
 *.pyc
 results/
+MultiNodeCodeSet/data/processStrings

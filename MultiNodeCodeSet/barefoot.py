@@ -53,7 +53,11 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
     except FileExistsError:
         pass
     # This string is used to create the job files for the subprocesses used when calculating the knowledge gradient
-    subProcessStr = '#!/bin/bash\n##ENVIRONMENT SETTINGS; CHANGE WITH CAUTION\n#SBATCH --export=NONE                #Do not propagate environment\n#SBATCH --get-user-env=L             #Replicate login environment\n\n##NECESSARY JOB SPECIFICATIONS\n#SBATCH --job-name=GPT_sub{0}\n#SBATCH --time=48:00:00\n#SBATCH --nodes=1\n#SBATCH --ntasks-per-node=20\n#SBATCH --mem=56G\n#SBATCH --output=LSFOut/barefootSub.%j\n\n##OPTIONAL JOB SPECIFICATIONS\n#SBATCH --account=122824063234\n\ncd /scratch/user/richardcouperthwaite/gpyTorchTest\nmodule load PyTorch/1.6.0-fosscuda-2019b-Python-3.7.4\nsource venv/bin/activate\npython subProcess.py {0}\n'
+    with open("data/processStrings", 'rb') as f:
+        processStrings = load(f)
+    
+    subProcessStr = processStrings[0]
+    runProcessStr = processStrings[1]
     calculation_count = int(param[3])*int(param[4])*(len(models)-1)
     if calculation_count % 1000 == 0:
         subprocess_count = int(calculation_count/1000)
@@ -64,10 +68,10 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
         with open("subprocess/{}.sh".format(fname), 'w') as f:
             f.write(subProcessStr.format(fname))
         with open("subprocess/submit{}.sh".format(fname), 'w') as f:
-            f.write("#!/bin/bash\ncd /scratch/user/richardcouperthwaite/gpyTorchTest/subprocess\nsbatch {}.sh".format(fname))
+            f.write(runProcessStr.format(fname))
         
-        os.chmod("/scratch/user/richardcouperthwaite/gpyTorchTest/subprocess/submit{}.sh".format(fname), 0o775)
-        subprocess.run(["/scratch/user/richardcouperthwaite/gpyTorchTest/subprocess/submit{}.sh".format(fname)])
+        os.chmod("subprocess/submit{}.sh".format(fname), 0o775)
+        subprocess.run(["subprocess/submit{}.sh".format(fname)], shell=True)
     # wait for all subprocesses to start
     all_pending = True
     with open("process_check.txt", "w") as f:
@@ -365,7 +369,6 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
             f.write("Calculation sent to subprocess\n")
         # Start a timer and wait for 2 hours, since the subprocess calculations
         # are expected to take a little over 2.5 hours
-        new_start = time()
         sleep(1800)
         
         finished = 0
