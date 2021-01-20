@@ -452,7 +452,7 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
         if med_input.shape[0] > num_medoids:
             medoids, clusters = k_medoids(med_input[:,0:3], num_medoids)
         else:
-            medoids, clusters = k_medoids(med_input[:,0:3], int(med_input.shape[0]/3))       
+            medoids, clusters = k_medoids(med_input[:,0:3], 1)       
         
         # next, need to get the true values for each of the medoids and update the
         # models before starting next iteration.
