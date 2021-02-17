@@ -2,3 +2,8 @@
 *.pyc
 results/
 MultiNodeCodeSet/data/processStrings
+*.sh
+*.log
+data/
+subprocess/
+*.txt
