@@ -22,8 +22,8 @@ def k_medoids(sample, num_clusters):
     M, C = kMedoids(D, num_clusters)
     return M, C  
 
-def batch_optimization(param, ndim, fused_points, initial_data, models, low_bound, \
-                       upper_bound, model_param, load_from_save):
+def batch_optimization_multinode(param, ndim, fused_points, initial_data, models, low_bound, \
+                       upper_bound, model_param, load_from_save, subprocess_count):
     """
     Batch optimization function for case where the GP parameters for the low 
     order models are known.
@@ -59,10 +59,11 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
     subProcessStr = processStrings[0]
     runProcessStr = processStrings[1]
     calculation_count = int(param[3])*int(param[4])*(len(models)-1)
-    if calculation_count % 1000 == 0:
-        subprocess_count = int(calculation_count/1000)
+    if calculation_count % subprocess_count == 0:
+        calcPerProcess = int(calculation_count/subprocess_count)
     else:
-        subprocess_count = int(calculation_count/1000) + 1
+        calcPerProcess = int(calculation_count/subprocess_count) + 1
+    
     # Start all subprocesses
     for fname in range(subprocess_count):
         with open("subprocess/{}.sh".format(fname), 'w') as f:
@@ -339,7 +340,7 @@ def batch_optimization(param, ndim, fused_points, initial_data, models, low_boun
                                     kernel, x_test, jj, kk, mm, sample_count,
                                     model_param['costs'], max_TM[-1]))
                     count += 1
-                    if count == 1000:
+                    if count == calcPerProcess:
                         fname = "{}".format(sub_count)
                         sub_fnames.append(fname)
                         
