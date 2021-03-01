@@ -68,6 +68,8 @@ class barefoot():
                              (Specify 0 for lb and 1 for ub if there is no bound for that input)
         func               : function constraints, must take the input matrix (x) and output a vector of length
                              equal to the number of samples in the input matrix (x) with boolean values.
+        keepSubRunning     : Determines whether the subprocesses are left running while calling the Truth Model
+        verbose            : Determines the logging level for tracking the calculations.
                              
         """
         if verbose:
