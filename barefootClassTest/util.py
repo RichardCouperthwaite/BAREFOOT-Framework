@@ -1,32 +1,118 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Jan  3 06:17:35 2021
+Created on Wed Feb 24 14:36:19 2021
 
 @author: Richard Couperthwaite
 """
 
-from pickle import dump, load
-import concurrent.futures
 import numpy as np
-from reificationFusion import model_reification
-from acquisitionFunc import knowledge_gradient, expected_improvement
-from sys import argv
-from time import sleep, time
-from multiprocessing import cpu_count
-import logging
+from pyDOE import lhs
+from kmedoids import kMedoids
+from scipy.spatial import distance_matrix
+from acquisitionFunc import expected_improvement, knowledge_gradient
+import matplotlib.pyplot as plt
+from time import time
 
-# create logger with 'spam_application'
-logger = logging.getLogger('BAREFOOT.subprocess')
-logger.setLevel(logging.DEBUG)
-# create file handler which logs even debug messages
-fh = logging.FileHandler('BAREFOOT.log')
-fh.setLevel(logging.DEBUG)
-# create formatter and add it to the handlers
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh.setFormatter(formatter)
-# add the handler to the logger
-logger.addHandler(fh)
+def k_medoids(sample, num_clusters):
+    D = distance_matrix(sample, sample)
+    M, C = kMedoids(D, num_clusters)
+    return M, C  
 
+def call_model(param):
+    output = param["Model"](param["Input Values"])
+    return output
+
+def cartesian(*arrays):
+    mesh = np.meshgrid(*arrays)  # standard numpy meshgrid
+    dim = len(mesh)  # number of dimensions
+    elements = mesh[0].size  # number of elements, any index will do
+    flat = np.concatenate(mesh).ravel()  # flatten the whole meshgrid
+    reshape = np.reshape(flat, (dim, elements)).T  # reshape and transpose
+    return reshape
+
+def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], opt_sample_size=True):
+    sampleSelection = True
+    constraints = np.zeros((5))
+    if A != []:
+        constraints[0] = 1
+    if Aeq != []:
+        constraints[1] = 1
+    if lb != []:
+        constraints[2] = 1
+    if ub != []:
+        constraints[3] = 1
+    if func != []:
+        if (type(func) == list):
+            constraints[4] = len(func)
+        else:
+            constraints[4] = 1
+    lhs_samples = samples
+    while sampleSelection:
+        x = lhs(ndim, lhs_samples)
+        if resolution != []:
+            x = np.round(x, decimals=resolution)
+        constr_check = np.zeros((lhs_samples, ndim))
+        
+        # Apply inequality constraints
+        if (A != []) and (b != []) and (len(A) == ndim):
+            A_tile = np.tile(np.array(A), (lhs_samples,1))
+            constr_check += A_tile*x <= b
+            constraints[0] = 0
+
+        # Apply equality constraints
+        if (Aeq != []) and (beq != []):
+            Aeq_tile = np.tile(np.array(Aeq), (lhs_samples,1))
+            constr_check += Aeq_tile*x <= beq
+            constraints[1] = 0
+        
+        # Apply Lower and Upper Bounds
+        if (lb != []) and (len(lb) == ndim):
+            lb_tile = np.tile(np.array(lb).reshape((1,ndim)), (lhs_samples,1))
+            constr_check += x < lb_tile
+            constraints[2] = 0
+        if (ub != []) and (len(ub) == ndim):
+            ub_tile = np.tile(np.array(ub).reshape((1,ndim)), (lhs_samples,1))
+            constr_check += x > ub_tile
+            constraints[3] = 0
+        
+        constr_check = np.sum(constr_check, axis=1)
+        
+        # Apply custom function constraints
+        if (type(func) == list) and (func != []):
+            for ii in range(len(func)):
+                try:
+                    constr_check += func[ii](x)
+                    constraints[4] -= 0
+                except:
+                    pass
+        elif (type(func) != list) and (func != []):
+            try:
+                constr_check += func(x)    
+                constraints[4] = 0
+            except:
+                pass
+        index = np.where(constr_check == 0)[0]
+        
+        if opt_sample_size:
+            if len(index) >= samples:
+                x = x[index[0:samples],:]
+                sampleSelection = False
+                if np.sum(constraints) != 0:
+                    const_satisfied = False
+                else:
+                    const_satisfied = True
+            else:
+                if lhs_samples/samples < ndim*2000:
+                    lhs_samples += samples*100
+                else:
+                    x = lhs(ndim, samples)
+                    sampleSelection = False
+                    const_satisfied = False
+        else:
+            x = x[index[0:samples],:]
+            sampleSelection = False
+            const_satisfied = True
+    return x, const_satisfied
 
 def calculate_KG(param):
     """
@@ -142,8 +228,7 @@ def calculate_EI(param):
     for i in range(x_test.shape[1]):
         output.append(x_test[x_star,i])
     # Return the results
-    return output                       
-        
+    return output   
 
 def fused_calculate(param):
     """
@@ -168,106 +253,11 @@ def fused_calculate(param):
                                 kernel)
     # Predict the mean and variance at each test point
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    plt.figure()
+    plt.plot(x_test, fused_mean)
+    plt.savefig("plots/{}.png".format(time()))
     # Find the maximum of the fused model
     index_max = np.nonzero(fused_mean == np.max(fused_mean))
     # return the maximum value and the index of the test point that corresponds
     # with the maximum value
     return [np.max(fused_mean),index_max[0][0]]
-
-if __name__ == "__main__":
-    param = argv
-
-    logger.info("Subprocess {} | started".format(param[1]))
-        
-    with open("subprocess/sub{}.start".format(param[1]), 'w') as f:
-        f.write("subprocess started successfully\n\n") 
-    
-    not_close = True
-
-    while not_close:
-        try:
-            with open("subprocess/sub{}.control".format(param[1]), 'rb') as f:
-                control_param = load(f)
-            with open("subprocess/sub{}.start".format(param[1]), 'a') as f:
-                f.write("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
-                logger.debug("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
-                
-            if control_param[0] == 0:
-                logger.info("{} | New Subprocess calculation started\n".format(param[1]))
-
-                if control_param[2] == "KG":
-                    function = calculate_KG
-                elif control_param[2] == "EI":
-                    function = calculate_EI
-                
-                start = time()
-                
-                if control_param[1] == "iteration":
-                    with open("subprocess/{}.dump".format(param[1]), 'rb') as f:
-                        parameters = load(f)
-                    logger.debug("{} | Reduced Order Model Calculation Started | {} Calculations".format(param[1], len(parameters)))
-                    kg_output = []
-                    count = 0
-                    with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
-                        for result_from_process in zip(parameters, executor.map(function,parameters)):
-                            params, results = result_from_process
-                            kg_output.append(results)
-                            count += 1
-                            logger.debug("{} | {} / {} Calculations Completed".format(param[1], count, len(parameters)))
-                            
-                    with open("subprocess/{}.output".format(param[1]), 'wb') as f:
-                        dump(kg_output, f)
-                    
-                    
-                elif control_param[1] == "fused":
-                    with open("subprocess/fused.dump", 'rb') as f:
-                        parameters = load(f)
-                    logger.debug("{} | Fused Model Calculation Started | {} Calculations".format(param[1], len(parameters)))
-                    fused_output = []
-                    count = 0
-                    with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
-                        for result_from_process in zip(parameters, executor.map(fused_calculate,parameters)):
-                            params, results = result_from_process
-                            fused_output.append(results)
-                            count += 1
-                            logger.debug("{} | {} / {} Calculations Completed".format(param[1], count, len(parameters)))
-
-                    max_values = np.zeros((len(parameters[0][5],2)))
-                    
-                    for ii in range(len(fused_output)):
-                        if max_values[fused_output[ii,1],0] != 0:
-                            if max_values[fused_output[ii,1],0] < fused_output[ii,0]:
-                                max_values[fused_output[ii,1],0] = fused_output[ii,0]
-                                max_values[fused_output[ii,1],1] = fused_output[ii,1]
-                        else:
-                            max_values[fused_output[ii,1],0] = fused_output[ii,0]
-                            max_values[fused_output[ii,1],1] = fused_output[ii,1]
-                                
-                    fused_output = max_values[np.where(max_values[:,0]>0)]
-
-                    with open("subprocess/fused.output", 'wb') as f:
-                        dump(fused_output, f)
-                    
-            
-                with open("subprocess/sub{}.control".format(param[1]), 'wb') as f:
-                    control_param[0] = 1
-                    dump(control_param, f)
-                
-                logger.info("{} | Calculation Results Dumped | {} hours\n".format(param[1], np.round((time()-start)/3600, 4)))
-            
-        except:
-            pass
-        
-        sleep(30)
-
-        try:
-            with open('subprocess/close{}'.format(param[1]), 'r') as f:
-                d = f.read()
-            not_close = False
-            logger.debug("{} | Close Command Found".format(param[1]))
-        except FileNotFoundError:
-            pass
-            
-    with open("subprocess/sub{}.start".format(param[1]), 'a') as f:
-        f.write("subprocess finished successfully\n\n")
-    logger.info("{} | Subprocess Finished".format(param[1]))
