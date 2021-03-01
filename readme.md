@@ -110,3 +110,8 @@ def singeNodeTest():
 if __name__ == "__main__":
     singeNodeTest()
 ```
+
+For more information on the methods used in this framework, please see our publications:
+
+1. Couperthwaite, Richard, Abhilash Molkeri, Danial Khatamsaz, Ankit Srivastava, Douglas Allaire, and Raymundo Arroyave. “Materials Design Through Batch Bayesian Optimization with Multisource Information Fusion.” JOM, October 13, 2020. https://doi.org/10.1007/s11837-020-04396-x.
+
