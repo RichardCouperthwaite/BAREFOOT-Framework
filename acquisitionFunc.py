@@ -99,3 +99,12 @@ def expected_improvement(curr_max, xi, y, std):
     x_star = np.where(EI == max_val)[0]
     
     return max_val, x_star[0], EI
+
+
+def thompson_sampling(x_test, gp):
+    tsVal = gp.sample_posterior(x_test)
+    nu_star = np.max(tsVal)
+    
+    x_star = int(np.where(tsVal == nu_star)[0])
+    
+    return nu_star, x_star, tsVal

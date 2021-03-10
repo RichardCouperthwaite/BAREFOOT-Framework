@@ -16,15 +16,19 @@ from reificationFusion import model_reification
 import concurrent.futures
 from multiprocessing import cpu_count
 from copy import deepcopy
-from util import k_medoids, cartesian, call_model, apply_constraints, calculate_KG, calculate_EI, fused_calculate
+from util import k_medoids, cartesian, call_model, apply_constraints, calculate_KG, calculate_EI, fused_calculate, calculate_TS
 import logging
+
+# from testFrameworkCodeUtil import ThreeHumpCamel, ThreeHumpCamel_LO1, ThreeHumpCamel_LO2, ThreeHumpCamel_LO3, plotResults 
+# from testFrameworkCodeUtil import isostress_IS, isostrain_IS, isowork_IS, EC_Mart_IS, secant1_IS, TC_GP, RVE_GP
 
 class barefoot():
     def __init__(self, ROMModelList=[], TruthModel=[], calcInitData=True, 
                  initDataPathorNum=[], multiNode=0, workingDir=".", 
                  calculationName="Calculation", nDim=1, input_resolution=5, restore_calc=False,
                  updateROMafterTM=False, externalTM=False, acquisitionFunc="KG",
-                 A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, verbose=False):
+                 A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
+                 verbose=False, sampleScheme="LHS", logname="BAREFOOT"):
         """
         Python Class for Batch Reification/Fusion Optimization (BAREFOOT) Framework Calculations
 
@@ -77,11 +81,10 @@ class barefoot():
         else:
             log_level = logging.INFO
         
-        # create self.logger 
-        self.logger = logging.getLogger('BAREFOOT')
+        # create logger to output framework progress
+        self.logger = logging.getLogger(logname)
         self.logger.setLevel(log_level)
-        # create file handler which logs even debug messages
-        fh = logging.FileHandler('BAREFOOT-{}.log'.format(calculationName))
+        fh = logging.FileHandler('{}.log'.format(logname))
         fh.setLevel(log_level)
         # create formatter and add it to the handlers
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -100,7 +103,7 @@ class barefoot():
         # information and initialize
         
         if restore_calc:
-            self.__load_from_save()
+            self.__load_from_save(workingDir, calculationName)
             self.timeCheck = time()
             self.logger.info("Previous Save State Restored")
         else:
@@ -127,6 +130,7 @@ class barefoot():
             self.ub = ub
             self.lb = ub
             self.constr_func = func
+            self.sampleScheme = sampleScheme
             self.keepSubRunning = keepSubRunning
             self.updateROMafterTM = updateROMafterTM
             self.externalTM = externalTM
@@ -145,14 +149,22 @@ class barefoot():
             self.logger.debug("Results Directory Created Successfully")
         except FileExistsError:
             self.logger.debug("Results Directory Already Exists")
-            pass
+        try:
+            os.mkdir('{}/data'.format(self.workingDir))
+            self.logger.debug("Data Directory Created Successfully")
+        except FileExistsError:
+            self.logger.debug("Data Directory Already Exists")
+        try:
+            os.mkdir('{}/data/parameterSets'.format(self.workingDir))
+            self.logger.debug("Parameter Set Directory Created Successfully")
+        except FileExistsError:
+            self.logger.debug("Parameter Set Directory Already Exists")
         try:
             os.mkdir('{}/results/{}'.format(self.workingDir, 
                                             self.calculationName))
             self.logger.debug("Calculation Results Directory [{}] Created Successfully".format(self.calculationName))
         except FileExistsError:
             self.logger.debug("Calculation Results Directory [{}] Already Exists".format(self.calculationName))
-            pass
         # If using subprocesses, create the folder structure needed
         if self.multinode != 0:
             if os.path.exists('{}/subprocess'.format(self.workingDir)):
@@ -179,6 +191,8 @@ class barefoot():
         self.logger.debug("Output Dataframes Created")
     
     def __save_output_dataframes(self):
+        # The dataframes are saved in two forms, first a pickled version of the
+        # dataframe, and also a csv version for readability
         with open('{}/results/{}/evaluatedPoints'.format(self.workingDir, self.calculationName), 'wb') as f:
             dump(self.evaluatedPoints, f)
         self.evaluatedPoints.to_csv('{}/results/{}/evaluatedPoints.csv'.format(self.workingDir, self.calculationName))
@@ -188,14 +202,17 @@ class barefoot():
         self.logger.info("Dataframes Pickled and Dumped to Results Directory")
             
     def __save_calculation_state(self):
+        # This function saves the entire barefoot object into a pickle file
         with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'wb') as f:
             dump(self, f)
         self.logger.info("Calculation State Saved")
         
-    def __load_from_save(self):
+    def __load_from_save(self, workingDir, calculationName):
+        # This function restores the barefoot object parameters from a saved
+        # pickle file. In order for this to work, each variable of the object
+        # is restored separately.
         try:
-            print('{}/data/{}_save_state'.format(self.workingDir, self.calculationName))
-            with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'rb') as f:
+            with open('{}/data/{}_save_state'.format(workingDir, calculationName), 'rb') as f:
                 saveState = load(f)
                 self.logger.debug("Save State File Found")
             for item in vars(saveState).items():
@@ -205,6 +222,7 @@ class barefoot():
             self.logger.warning("Could not find Save State File")
         
     def __add_to_evaluatedPoints(self, modelIndex, eval_x, eval_y):
+        # Adds new data points to the evaluated datapoints dataframe
         temp = np.zeros((eval_x.shape[0], self.nDim+3))
         temp[:,0] = modelIndex
         temp[:,1] = self.currentIteration
@@ -215,6 +233,7 @@ class barefoot():
         self.logger.debug("{} New Points Added to Evaluated Points Dataframe".format(eval_x.shape[0]))
         
     def __add_to_iterationData(self, calcTime, iterData):
+        # Adds new data points to the Iteration Data Dataframe
         temp = np.zeros((1,4+len(self.ROM)))
         temp[0,0] = self.currentIteration
         temp[0,1] = self.maxTM
@@ -226,12 +245,16 @@ class barefoot():
         self.logger.debug("Iteration {} Data saved to Dataframe".format(self.currentIteration))
         
     def __get_initial_data__(self):
+        # Function for obtaining the initial data either by calculation or by 
+        # extracting the data from a file.
         params = []
         count = []
         param_index = 0
         self.maxTM = -np.inf
+        # Check if data needs to be calculated or extracted
         if self.calcInitData:
             self.logger.debug("Start Calculation of Initial Data")
+            # obtain LHS initial data for each reduced order model
             for ii in range(len(self.ROM)):
                 count.append(0)                
                 initInput, check = apply_constraints(self.initDataPathorNum[ii], 
@@ -252,7 +275,7 @@ class barefoot():
                 self.ROMInitInput.append(np.zeros_like(initInput))
                 self.ROMInitOutput.append(np.zeros(self.initDataPathorNum[ii]))
             count.append(0)
-            
+            # Obtain LHS initial data for Truth Model
             initInput, check = apply_constraints(self.initDataPathorNum[ii+1], 
                                                      self.nDim, self.res,
                                                       self.A, self.b, self.Aeq, self.beq, 
@@ -270,6 +293,7 @@ class barefoot():
             self.TMInitInput = np.zeros_like(initInput)
             self.TMInitOutput = np.zeros(self.initDataPathorNum[-1])
             
+            # Calculate all the initial data in parallel
             temp_x = np.zeros((len(params), self.nDim))
             temp_y = np.zeros(len(params))
             temp_index = np.zeros(len(params))
@@ -286,17 +310,20 @@ class barefoot():
                     else:
                         self.TMInitInput[count[par["Model Index"]],:] = par["Input Values"]
                         self.TMInitOutput[count[par["Model Index"]]] = results
-                        if results > self.maxTM:
-                            self.maxTM = results
+                        if np.max(results) > self.maxTM:
+                            self.maxTM = np.max(results)
                         temp_x[par["ParamIndex"],:] = par["Input Values"]
                         temp_y[par["ParamIndex"]] = results
                         temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
             self.logger.debug("Concurrent.Futures Calculation Completed")
         else:
+            # extract the initial data from the file
             self.logger.debug("Start Loading Initial Data from Files")
             with open(self.initDataPathorNum, 'rb') as f:
                 data = load(f)
+            
+            # extract data from dictionary in file and assign to correct variables
             self.TMInitOutput = data["TMInitOutput"]
             self.TMInitInput = data["TMInitInput"]
             self.ROMInitOutput = data["ROMInitOutput"]
@@ -323,10 +350,13 @@ class barefoot():
             for jj in range(self.TMInitOutput.shape[0]):
                 temp_x[ind,:] = self.TMInitInput[jj,:]
                 temp_y[ind] = self.TMInitOutput[jj]
+                if self.TMInitOutput[jj] > self.maxTM:
+                    self.maxTM = self.TMInitOutput[jj]
                 temp_index[ind] = -1
                 ind += 1
             count.append(self.TMInitInput.shape[0])
             self.logger.debug("Loading Data From File Completed")
+        # Add initial data to dataframes
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.__add_to_iterationData(time()-self.timeCheck, np.array(count))
         self.logger.debug("Initial Data Saved to Dataframes")
@@ -336,6 +366,72 @@ class barefoot():
                               sampleCount=50, hpCount=100, batchSize=5, 
                               tmIter=1e6, totalBudget=1e16, tmBudget=1e16, 
                               upperBound=1, lowBound=0.0001, fusedPoints=5):
+        """
+        This function sets the conditions for the barefoot framework calculations.
+        All parameters have default values except the model parameters.
+
+        Parameters
+        ----------
+        modelParam : TYPE
+            This must be a dictionary with the hyperparameters for the reduced
+            order models as well as the costs for all the models. The specific
+            values in the dictionary must be:
+                'model_l': A list with the characteristic length scale for each
+                           dimension in each reduced order model GP.
+                           eg 2 reduced order - 3 dimension models
+                           [[0.1,0.1,0.1],[0.2,0.2,0.2]]
+                'model_sf': A list with the signal variance for each reduced
+                            order model GP.
+                'model_sn': A list with the noise variance for each reduced
+                            order model GP.
+                'means': A list of the mean of each model. Set to 0 if the mean
+                         is not known
+                'std': A list of the standard deviations of each model. Set to 1
+                       if the standard deviation is not known.
+                'err_l': A list with the characteristic length scale for each
+                           dimension in each discrepancy GP. Must match dimensions
+                           of model_l
+                'err_sf': A list with the signal variance for each discrepancy GP.
+                'err_sn': A list with the noise variance for each discrepancy GP.
+                'costs': The model costs, including the Truth Model
+                         eg. 2 ROM : [model 1 cost, model 2 cost, Truth model cost]
+        covFunc : TYPE, optional
+            The covariance function to used for the Gaussian Process models.
+            Options are Squared Exponential ("SE") Matern 3/2 ("M32") and 
+            Matern 5/2 ("M52"). The default is "M32".
+        iterLimit : TYPE, optional
+            How many iterations to run the framework calculation before
+            terminating. The default is 100.
+        sampleCount : TYPE, optional
+            The number of samples to use for the acquisition function calculations.
+            The default is 50.
+        hpCount : TYPE, optional
+            The number of hyperparameter sets to use. The default is 100.
+        batchSize : TYPE, optional
+            The batch size for the model evaluations. The default is 5.
+        tmIter : TYPE, optional
+            The number of iterations to complete before querying the Truth Model. 
+            The default is 1e6.
+        totalBudget : TYPE, optional
+            The total time budget to expend before terminating the calculation. 
+            The default is 1e16.
+        tmBudget : TYPE, optional
+            The budget to expend before querying the Truth Model. The default 
+            is 1e16.
+        upperBound : TYPE, optional
+            The upper bound for the hyperparameters. The default is 1.
+        lowBound : TYPE, optional
+            The lower bound for the hyperparameters. The default is 0.0001.
+        fusedPoints : TYPE, optional
+            The number of points per dimension for the linear grid used to 
+            evaluate the fused mean and variance for building the fused model. 
+            The default is 5.
+
+        Returns
+        -------
+        None.
+
+        """
         self.logger.debug("Start Initializing Reification Object Parameters")
         self.covFunc = covFunc 
         self.iterLimit = iterLimit 
@@ -412,20 +508,33 @@ class barefoot():
     def __run_multinode_acq_func(self, x_test, new_mean, calcPerProcess):
         self.logger.info("Set Up Parameters for Acquisition Function Evaluation and submit to Subprocesses")
         parameters = []
+        parameterFileData = []
         sub_fnames = []
         count = 0
         sub_count = 0
+        parameterIndex = 0
+        parameterFileIndex = 0
+        with open("data/reificationObj", 'wb') as f:
+            dump(self.reificationObj, f)
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
-                model_temp = deepcopy(self.reificationObj)
-                model_temp.update_GP(np.expand_dims(x_test[kk], axis=0), 
-                                      np.expand_dims(np.array([new_mean[jj][kk]]), 
-                                                axis=0), jj)
+                model_temp = [np.expand_dims(x_test[kk], axis=0), 
+                              np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
+                              jj]
 
                 for mm in range(self.hpCount):
-                    parameters.append((1, model_temp, self.xFused, self.fusedModelHP[mm,:],
+                    parameterFileData.append((1, model_temp, self.xFused, self.fusedModelHP[mm,:],
                                     self.covFunc, x_test, jj, kk, mm, self.sampleCount,
                                     self.modelParam['costs'], self.maxTM))
+                    parameters.append([parameterIndex, parameterFileIndex])
+                    parameterIndex += 1
+                    
+                    if len(parameterFileData) == 1000:
+                        with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                            dump(parameterFileData, f)
+                        parameterFileData = []
+                        parameterFileIndex += 1
+                        parameterIndex = 0
                     count += 1
                     if count == calcPerProcess:
                         fname = "{}".format(sub_count)
@@ -442,6 +551,9 @@ class barefoot():
                         count = 0
                         sub_count += 1
         
+        if len(parameterFileData) != 0:
+            with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                dump(parameterFileData, f)
         
         if parameters != []:
             fname = "{}".format(sub_count)
@@ -507,28 +619,53 @@ class barefoot():
         self.logger.debug("Calculation Results retrieved from Subprocess Jobs")
         return kg_output, process_cost
     
-    def __run_singlenode_acq_func(self, x_test, new_mean):
+    def __run_singlenode_acq_func(self, x_test, new_mean):        
         parameters = []
+        parameterFileData = []
         count = 0
+        parameterIndex = 0
+        parameterFileIndex = 0
         self.logger.debug("Set Up Parameters for Acquisition Function Evaluation")
+        with open("data/reificationObj", 'wb') as f:
+            dump(self.reificationObj, f)
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
-                model_temp = deepcopy(self.reificationObj)
-                model_temp.update_GP(np.expand_dims(x_test[kk], axis=0), 
-                                      np.expand_dims(np.array([new_mean[jj][kk]]), 
-                                                axis=0), jj)
+                
+                
+                # model_temp = deepcopy(self.reificationObj)
+                model_temp = [np.expand_dims(x_test[kk], axis=0), 
+                              np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
+                              jj]
 
                 for mm in range(self.hpCount):
-                    parameters.append((1, model_temp, self.xFused, self.fusedModelHP[mm,:],
+                    parameterFileData.append((1, model_temp, self.xFused, self.fusedModelHP[mm,:],
                                     self.covFunc, x_test, jj, kk, mm, self.sampleCount,
                                     self.modelParam['costs'], self.maxTM))
+                    parameters.append([parameterIndex, parameterFileIndex])
+                    parameterIndex += 1
+                    
+                    if len(parameterFileData) == 1000:
+                        with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                            dump(parameterFileData, f)
+                        parameterFileData = []
+                        parameterFileIndex += 1
+                        parameterIndex = 0
                     count += 1
                     
-
+        if len(parameterFileData) != 0:
+            with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                dump(parameterFileData, f)
+                    
+        if self.acquisitionFunc == "EI":
+            acqFunc = calculate_EI
+        elif self.acquisitionFunc == "KG":
+            acqFunc = calculate_KG
+        elif self.acquisitionFunc == "TS":
+            acqFunc = calculate_TS
         kg_output = []
         self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
-            for result_from_process in zip(parameters, executor.map(calculate_EI,parameters)):
+            for result_from_process in zip(parameters, executor.map(acqFunc,parameters)):
                 params, results = result_from_process
                 kg_output.append(results)
         self.logger.info("Acquisition Function Evaluations Completed")
@@ -537,54 +674,146 @@ class barefoot():
     def __run_multinode_fused(self, tm_test):
         # initialize the parameters for the fused model calculations and
         # start the calculation
+        calc_limit = (-(-self.hpCount//self.multinode)) 
         self.logger.debug("Define Parameters for Max Value Evaluations")
         parameters = []
+        parameterFileData = []
+        parameterIndex = 0
+        parameterFileIndex = 0
+        count = 0
+        sub_count = 0
+        sub_fnames = []
+        with open("data/reificationObj", 'wb') as f:
+            dump(self.reificationObj, f)
         for mm in range(self.hpCount):
-            parameters.append((1, self.reificationObj, self.xFused, self.fusedModelHP[mm,:],
+            parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
                             self.covFunc, tm_test, self.maxTM, 0.01))
+            parameters.append([parameterIndex, parameterFileIndex])
+            parameterIndex += 1
+            count += 1
             
-        with open("{}/subprocess/fused.dump".format(self.workingDir), 'wb') as f:
-            dump(parameters, f)
+            if len(parameterFileData) == 500:
+                with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                    dump(parameterFileData, f)
+                parameterFileData = []
+                parameterFileIndex += 1
+                parameterIndex = 0
             
-        with open("{}/subprocess/sub0.control".format(self.workingDir), 'wb') as f:
-            control_param = [0, "fused", self.acquisitionFunc]
-            dump(control_param, f)
+            if count == calc_limit:
+                fname = "{}".format(sub_count)
+                sub_fnames.append(fname)
+                
+                with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_count), 'wb') as f:
+                    control_param = [0, "fused", self.acquisitionFunc]
+                    dump(control_param, f)
+
+                with open("{}/subprocess/{}.dump".format(self.workingDir, fname), 'wb') as f:
+                    dump(parameters, f)
+                
+                parameters = []
+                count = 0
+                sub_count += 1
+                
+        if len(parameterFileData) != 0:
+            with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                dump(parameterFileData, f)
+                
+        if parameters != []:
+            fname = "{}".format(sub_count)
+            sub_fnames.append(fname)
+            
+            with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_count), 'wb') as f:
+                control_param = [0, "fused", self.acquisitionFunc]
+                dump(control_param, f)
+
+            with open("{}/subprocess/{}.dump".format(self.workingDir, fname), 'wb') as f:
+                dump(parameters, f)
+
         self.logger.info("Parameters for Max Value Calculations Sent to Subprocess")
         sleep(60)
 
-        while True:
-            if os.path.exists("{}/subprocess/fused.output".format(self.workingDir)):
-                break
+        finished = 0
+        while finished < len(sub_fnames):
+            finished = 0
+            for sub_name in sub_fnames:
+                with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_name), 'rb') as f:
+                    control_param = load(f)
+                    if control_param[0] == 1:
+                        finished += 1
+            if finished < len(sub_fnames):          
+                sleep(60)        
+        
+        fused_output = []
+        for sub_name in sub_fnames:
+            cont_loop = True
+            load_failed = True
+            timer = 0
+            while cont_loop:
+                try:
+                    with open("{}/subprocess/{}.output".format(self.workingDir, sub_name), 'rb') as f:
+                        sub_output = load(f)
+                    load_failed = False
+                    cont_loop = False
+                except FileNotFoundError:
+                    sleep(30)
+                    timer += 30
+                if timer > 300:
+                    cont_loop = False
+                    
+            if not load_failed:
+                self.logger.debug("sub_output {} found | length: {}".format(sub_name, len(sub_output)))
+                for jj in range(len(sub_output)):
+                    fused_output.append(sub_output[jj])
+                os.remove("{}/subprocess/{}.output".format(self.workingDir, sub_name))
+                os.remove("{}/subprocess/{}.dump".format(self.workingDir, sub_name))
             else:
-                sleep(30)
-                
-        with open("{}/subprocess/fused.output".format(self.workingDir), 'rb') as f:
-            fused_output = load(f)
+                self.logger.debug("sub_output {} NOT found".format(len(sub_name)))
+        
+        # with open("{}/subprocess/fused.output".format(self.workingDir), 'rb') as f:
+        #     fused_output = load(f)
             
-        os.remove("{}/subprocess/fused.dump".format(self.workingDir))
-        os.remove("{}/subprocess/fused.output".format(self.workingDir))
+        # os.remove("{}/subprocess/fused.dump".format(self.workingDir))
+        # os.remove("{}/subprocess/fused.output".format(self.workingDir))
 
         self.logger.info("Max Value Calculations Completed")
         return fused_output
         
     def __run_singlenode_fused(self, tm_test):
         parameters = []
-                
+        parameterFileData = []
         # initialize the parameters for the fused model calculations and
         # start the calculation
         self.logger.debug("Define Parameters for Max Value Evaluations")
+        parameterIndex = 0
+        parameterFileIndex = 0
+        with open("data/reificationObj", 'wb') as f:
+            dump(self.reificationObj, f)
         for mm in range(self.hpCount):
-            parameters.append((1, self.reificationObj, self.xFused, self.fusedModelHP[mm,:],
+            parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
                             self.covFunc, tm_test, self.maxTM, 0.01))
-        
+            parameters.append([parameterIndex, parameterFileIndex])
+            parameterIndex += 1
+            if len(parameterFileData) == 500:
+                with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                    dump(parameterFileData, f)
+                parameterFileData = []
+                parameterFileIndex += 1
+                parameterIndex = 0
+            
+        if len(parameterFileData) != 0:
+            with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                dump(parameterFileData, f)
+
         fused_output = []
         self.logger.info("Start Max Value Calculations | {} Sets".format(len(parameters)))
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        count = 0
+        with concurrent.futures.ProcessPoolExecutor(2) as executor:#cpu_count()) as executor:
             for result_from_process in zip(parameters, executor.map(fused_calculate,parameters)):
                 params, results = result_from_process
-                fused_output.append(results)
+                fused_output.append(results[0])
+                count += 1
                 
-        max_values = np.zeros((len(parameters[0][5]),2))
+        max_values = np.zeros((results[1],2))
                     
         for ii in range(len(fused_output)):
             if max_values[fused_output[ii][1],0] != 0:
@@ -640,12 +869,16 @@ class barefoot():
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
-                self.reificationObj.update_truth(par["Input Values"], results)
-                temp_x[par["ParamIndex"],:] = par["Input Values"]
-                temp_y[par["ParamIndex"]] = results
-                temp_index[par["ParamIndex"]] = par["Model Index"]
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
-                count[par["Model Index"]] += 1
+                if results != False:
+                    self.reificationObj.update_truth(par["Input Values"], results)
+                    temp_x[par["ParamIndex"],:] = par["Input Values"]
+                    temp_y[par["ParamIndex"]] = results
+                    temp_index[par["ParamIndex"]] = par["Model Index"]
+                    count[par["Model Index"]] += 1
+        temp_x = temp_x[np.where(temp_y != 0)]
+        temp_y = temp_y[np.where(temp_y != 0)]
+        temp_index = temp_index[np.where(temp_y != 0)]
         self.logger.info("Truth Model Evaluations Completed")
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
@@ -679,12 +912,13 @@ class barefoot():
                 x_test, check = apply_constraints(self.sampleCount, 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
-                                              self.lb, self.ub, self.constr_func)
+                                              self.lb, self.ub, self.constr_func,
+                                              self.sampleScheme)
                 # If constraints can't be satisfied, notify the user in the log
                 if check:
-                    self.logger.debug("Acquisition Function Evaluation - All constraints applied successfully")
+                    self.logger.debug("ROM - All constraints applied successfully {}/{}".format(x_test.shape[0], self.sampleCount))
                 else:
-                    self.logger.critical("Acquisition Function Evaluation - Some or All Constraints Could Not Be Applied! Continuing Without Constraints")
+                    self.logger.critical("ROM - Sample Size NOT met due to constraints! Continue with {}/{} Samples".format(x_test.shape[0], self.sampleCount))
                 
                 new_mean = []
                 # obtain predictions from the low-order GPs
@@ -721,11 +955,9 @@ class barefoot():
                 
                 if (self.tmBudgetLeft < 0) or (self.tmIterCount == self.tmIterLim):
                     self.logger.info("Start Truth Model Evaluations")
-                    self.tmIterCount = 0
-                    self.tmBudgetLeft = self.tmBudget
                     
                     # create a test set that is dependent on the number of dimensions            
-                    tm_test, check = apply_constraints(25000*self.nDim, 
+                    tm_test, check = apply_constraints(2500*self.nDim, 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
                                               self.lb, self.ub, self.constr_func, False)
@@ -758,7 +990,10 @@ class barefoot():
                                        "Input Values":np.array(tm_test[int(fused_output[medoids[iii],1]),:], dtype=np.float),
                                        "ParamIndex":param_index})
                         param_index += 1
-                        
+                    
+                    self.tmIterCount = 0
+                    self.tmBudgetLeft = self.tmBudget
+                    
                     if self.externalTM or not self.keepSubRunning:
                         self.__external_TM_data_save(params, count)
                         if self.multinode > 0:
@@ -770,7 +1005,7 @@ class barefoot():
                     else:
                         count = self.__call_Truth(params, count)
                     
-                self.__add_to_iterationData(time()-self.timeCheck, count)
+                self.__add_to_iterationData(time()-self.timeCheck + model_cost, count)
                 self.timeCheck = time()
                 
                 if self.updateROMafterTM:
@@ -883,6 +1118,7 @@ class barefoot():
         
         self.logger.info("{} Subprocess Jobs | {} Calculations per Subprocess".format(subprocess_count, calcPerProcess))
         # Start all subprocesses
+
         for fname in range(subprocess_count):
             with open("{}/subprocess/{}.sh".format(self.workingDir, fname), 'w') as f:
                 f.write(subProcessStr.format(fname))
@@ -1021,16 +1257,6 @@ class barefoot():
         
         
         
-def runExternalTMCode(setupParams, InitialParams):
-    framework = barefoot(**setupParams)
-    if os.path.exists('{}/results/{}/TruthModelEvaluationPoints.csv'.format(framework.workingDir, framework.calculationName)):
-        framework.__external_TM_data_load()
-        framework.run_single_node()
-    else:
-        framework.initialize_parameters(**InitialParams)
-        framework.run_single_node()
-    
-    
 
 
 
@@ -1077,7 +1303,7 @@ def plot_results(calcName):
     plt.plot(iterationData.loc[:,"Iteration"], iterationData.loc[:,"Max Found"])
 
 def singeNodeTest():
-    np.random.seed(100)
+    # np.random.seed(100)
     ROMList = [rom1, rom2]
     test = barefoot(ROMModelList=ROMList, TruthModel=tm, 
                     calcInitData=True, initDataPathorNum=[1,1,1,1], nDim=1, 
@@ -1092,8 +1318,8 @@ def singeNodeTest():
                 'err_sn':[0.01,0.01],
                 'costs':[1,2,20]}
     test.initialize_parameters(modelParam=modelParam, iterLimit=30, 
-                               sampleCount=10, hpCount=50, 
-                               batchSize=2, tmIter=5)
+                                sampleCount=10, hpCount=50, 
+                                batchSize=2, tmIter=5)
     test.run_optimization()
     
     plot_results("SingleNodeTest")

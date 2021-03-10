@@ -54,6 +54,9 @@ class gp_model:
             self.sigma_n = np.append(self.sigma_n, new_y_err)
             
         self.gp = self.create_gp()
+    
+    def sample_posterior(self, x_test):
+        return self.gp.sample_conditional(self.y_train, x_test, size=1)
         
     def log_likelihood(self):
         return self.gp.log_likelihood(self.y_train, quiet=True)
