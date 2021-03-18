@@ -28,7 +28,7 @@ class barefoot():
                  calculationName="Calculation", nDim=1, input_resolution=5, restore_calc=False,
                  updateROMafterTM=False, externalTM=False, acquisitionFunc="KG",
                  A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
-                 verbose=False, sampleScheme="LHS", logname="BAREFOOT"):
+                 verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT"):
         """
         Python Class for Batch Reification/Fusion Optimization (BAREFOOT) Framework Calculations
 
@@ -121,6 +121,7 @@ class barefoot():
             self.calcInitData = calcInitData
             self.initDataPathorNum = initDataPathorNum
             self.currentIteration = -1
+            self.tmSampleOpt = tmSampleOpt
             self.nDim = nDim
             self.res = input_resolution
             self.A = A
@@ -687,7 +688,7 @@ class barefoot():
             dump(self.reificationObj, f)
         for mm in range(self.hpCount):
             parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
-                            self.covFunc, tm_test, self.maxTM, 0.01))
+                            self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
             parameters.append([parameterIndex, parameterFileIndex])
             parameterIndex += 1
             count += 1
@@ -774,7 +775,10 @@ class barefoot():
             
         # os.remove("{}/subprocess/fused.dump".format(self.workingDir))
         # os.remove("{}/subprocess/fused.output".format(self.workingDir))
-
+        fused_output = np.array(fused_output, dtype=object)
+        if fused_output.shape[0] == 0:
+            fused_output = np.array([[0,0]])
+        
         self.logger.info("Max Value Calculations Completed")
         return fused_output
         
@@ -790,7 +794,7 @@ class barefoot():
             dump(self.reificationObj, f)
         for mm in range(self.hpCount):
             parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
-                            self.covFunc, tm_test, self.maxTM, 0.01))
+                            self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
             parameters.append([parameterIndex, parameterFileIndex])
             parameterIndex += 1
             if len(parameterFileData) == 500:
@@ -825,6 +829,10 @@ class barefoot():
                 max_values[fused_output[ii][1],1] = fused_output[ii][1]
                     
         fused_output = max_values[np.where(max_values[:,0]!=0)]
+        
+        if fused_output.shape[0] == 0:
+            fused_output = np.array([[0,0]])
+        
         self.logger.info("Max Value Calculations Completed")
         return fused_output
 
@@ -886,6 +894,24 @@ class barefoot():
             self.maxTM = np.max(temp_y)
         return count
     
+    def __close_subs_on_error(func):
+        """
+        If an error occurs during the optimization, a multinode calculation must
+        still close all subprocesses to avoid excessive computing hour costs
+        """
+        def close_subs(self):
+            try:
+                func(self)
+            except Exception as err:
+                self.logger.critical("Optimization Code Failed - See Error Below")
+                self.logger.exception(err)
+            if self.multinode > 0:
+                for fname in range(self.multinode):
+                    with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
+                        f.write("Close Subprocess {}".format(fname))
+        return close_subs
+        
+    @__close_subs_on_error
     def run_optimization(self):
         self.logger.info("Start BAREFOOT Framework Calculation")
         # Check if the calculation requires multiple nodes and start them if necessary
@@ -955,9 +981,9 @@ class barefoot():
                 
                 if (self.tmBudgetLeft < 0) or (self.tmIterCount == self.tmIterLim):
                     self.logger.info("Start Truth Model Evaluations")
-                    
+
                     # create a test set that is dependent on the number of dimensions            
-                    tm_test, check = apply_constraints(2500*self.nDim, 
+                    tm_test, check = apply_constraints(int(75000/(self.nDim*self.nDim)), 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
                                               self.lb, self.ub, self.constr_func, False)
@@ -970,7 +996,7 @@ class barefoot():
                         fused_output = self.__run_multinode_fused(tm_test)
                     else:
                         fused_output = self.__run_singlenode_fused(tm_test)
-                    
+                        
                     fused_output = np.array(fused_output, dtype=object)
                     if fused_output.shape[0] > self.batchSize:
                         medoids, clusters = k_medoids(fused_output, self.batchSize)
@@ -980,7 +1006,7 @@ class barefoot():
                         medoids = []
                         for iii in range(fused_output.shape[0]):
                             medoids.append(iii)
-                                            
+                            
                     params = []
                     param_index = 0
                     self.logger.debug("Define Parameters for Truth Model Evaluations")
@@ -996,11 +1022,11 @@ class barefoot():
                     
                     if self.externalTM or not self.keepSubRunning:
                         self.__external_TM_data_save(params, count)
-                        if self.multinode > 0:
-                            for fname in range(self.multinode):
-                                with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
-                                    f.write("Close Subprocess {}".format(fname))
-                            start_process = False
+                        # if self.multinode > 0:
+                        #     for fname in range(self.multinode):
+                        #         with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
+                        #             f.write("Close Subprocess {}".format(fname))
+                        #     start_process = False
                         break
                     else:
                         count = self.__call_Truth(params, count)
@@ -1030,17 +1056,10 @@ class barefoot():
         
     def __kg_calc_clustering(self, kg_output):
         # convert to a numpy array for ease of indexing
-#        self.logger.debug("Clustering Algorithm, input shape: {}".format(kg_output.shape))
         kg_output = np.array(kg_output, dtype=object)
-#        self.logger.debug("Clustering Algorithm, kg_output array shape: {}".format(kg_output.shape))
-#        df = pd.DataFrame(kg_output)
-#        df.to_csv("kg_output.csv")
-        # print(kg_output)
-        # print(kg_output.shape)
         point_selection = {}
         self.logger.debug("Extract Points for Clustering from Acquisition Function Evaluations")
         for iii in range(kg_output.shape[0]):
-            # print(iii)
             try:
                 if kg_output[iii,3] in point_selection[kg_output[iii,2]]['models']:
                     if kg_output[iii,1] > point_selection[kg_output[iii,2]]['nu'][kg_output[iii,3]]:
@@ -1256,73 +1275,3 @@ class barefoot():
         self.tmIterCount += 1
         
         
-        
-
-
-
-##############################################################################
-##############################################################################
-##                                                                          ##
-##                        Test Code Section                                 ##
-##                                                                          ##
-##############################################################################
-##############################################################################
-
-import matplotlib.pyplot as plt
-
-def rom1(x):
-    x = x*(2)+0.5
-    return -np.sin(9.5*np.pi*x) / (2*x)
-
-def rom2(x):
-    x = x*(2)+0.5
-    return -(x-1)**4
-
-def tm(x):
-    x = x*(2)+0.5
-    # Gramacy & Lee Test Function
-    return -(x-1)**4 - np.sin(10*np.pi*x) / (2*x)
-
-def plot_results(calcName):
-    x = np.linspace(0,1,1000)
-
-    y1 = tm(x)
-    y2 = rom1(x)
-    y3 = rom2(x)
-    
-    plt.figure()
-    plt.plot(x,y1,label="TM")
-    plt.plot(x,y2,label="ROM1")
-    plt.plot(x,y3,label="ROM2")
-    plt.legend()
-
-    with open('./results/{}/iterationData'.format(calcName), 'rb') as f:
-        iterationData = load(f)
-    
-    plt.figure()
-    plt.plot(iterationData.loc[:,"Iteration"], iterationData.loc[:,"Max Found"])
-
-def singeNodeTest():
-    # np.random.seed(100)
-    ROMList = [rom1, rom2]
-    test = barefoot(ROMModelList=ROMList, TruthModel=tm, 
-                    calcInitData=True, initDataPathorNum=[1,1,1,1], nDim=1, 
-                    calculationName="SingleNodeTest", acquisitionFunc="EI")
-    modelParam = {'model_l':[[0.1],[0.1]], 
-                'model_sf':[1,1,1], 
-                'model_sn':[0.01,0.01], 
-                'means':[0,0], 
-                'std':[1,1], 
-                'err_l':[[0.1],[0.1]], 
-                'err_sf':[1,1,1], 
-                'err_sn':[0.01,0.01],
-                'costs':[1,2,20]}
-    test.initialize_parameters(modelParam=modelParam, iterLimit=30, 
-                                sampleCount=10, hpCount=50, 
-                                batchSize=2, tmIter=5)
-    test.run_optimization()
-    
-    plot_results("SingleNodeTest")
-
-if __name__ == "__main__":
-    singeNodeTest()

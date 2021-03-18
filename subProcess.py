@@ -17,8 +17,8 @@ import logging
 if __name__ == "__main__":
     param = argv
     
-    log_level = logging.DEBUG
-    # log_level = logging.INFO
+    # log_level = logging.DEBUG
+    log_level = logging.INFO
     
     logger = logging.getLogger('BAREFOOT.subprocess')   
     logger.setLevel(log_level)
@@ -39,12 +39,16 @@ if __name__ == "__main__":
 
     while not_close:
         try:
-            with open("subprocess/sub{}.control".format(param[1]), 'rb') as f:
-                control_param = load(f)
-            with open("subprocess/sub{}.start".format(param[1]), 'a') as f:
-                f.write("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
-                logger.debug("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
-                
+            try:
+                with open("subprocess/sub{}.control".format(param[1]), 'rb') as f:
+                    control_param = load(f)
+                with open("subprocess/sub{}.start".format(param[1]), 'a') as f:
+                    f.write("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
+                    logger.debug("Control File Found - {} | {}\n".format(control_param[0], control_param[1]))
+            except FileExistsError:
+                logger.debug("Control File could not be found")
+                control_param = [1,1]
+ 
             if control_param[0] == 0:
                 logger.info("{} | New Subprocess calculation started\n".format(param[1]))
 

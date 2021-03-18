@@ -9,54 +9,35 @@ import numpy as np
 from gpModel import gp_model
 import matplotlib.pyplot as plt
 
-def reification(y, sig):
-    """
-    This function is coded to enable the reification of any number of models.
-    """
-    mean_fused = []
-    var_fused = []
+def reification(y,sig):    
+    yM = np.tile(y, (len(y),1,1)).transpose()
+    sigM = np.tile(sig, (len(y),1,1)).transpose()
     
-    rtest = []
-        
-    rho_bar = []
-    for i in range(len(y)-1):
-        for j in range(len(y)-i-1):
-#            y[j+i][np.where((np.abs(y[i]-0)<eps)*(np.abs(y[j+i]-0)<eps))] = 10
-            
-            rho1 = np.divide(np.sqrt(sig[i]), np.sqrt((y[i]-y[j+i+1])**2 + sig[i]))
-            rtest.append(rho1)
-            rho2 = np.divide(np.sqrt(sig[j+i+1]), np.sqrt((y[j+i+1]-y[i])**2 + sig[j+i+1]))
-            rtest.append(rho2)
-            rho_bar_ij = np.divide(sig[j+i+1], (sig[i]+sig[j+i+1]))*rho1 + np.divide(sig[i], (sig[i]+sig[j+i+1]))*rho2
-            rho_bar_ij[np.where(rho_bar_ij>0.99)] = 0.99
-            rho_bar.append(rho_bar_ij)
-            
-    mm = rho_bar[0].shape[0]
-            
-    sigma = np.zeros((len(y), len(y)))
+    unoM = np.tile(np.diag(np.ones(len(y))), (yM.shape[0],1,1))
+    zeroM = np.abs(unoM-1)
     
-    for i in range(mm):
-        for j in range(len(y)):
-            for k in range(len(y)-j):
-                jj = j
-                kk = k+j
-                if jj == kk:
-                    sigma[jj,kk] = sig[jj][i]
-                else:
-                    sigma[jj,kk] = rho_bar[kk+jj-1][i]*np.sqrt(sig[jj][i]*sig[kk][i])
-                    sigma[kk,jj] = rho_bar[kk+jj-1][i]*np.sqrt(sig[jj][i]*sig[kk][i])
-
-        alpha = np.linalg.inv(sigma)
-        w = np.sum(alpha,1)/np.sum(alpha)
-        mu = y[0][i]
-        for j in range(len(y)-1):
-            mu = np.hstack((mu,y[j+1][i]))
-        mean = np.sum(w@mu)
-        
-        mean_fused.append(mean)
-        var_fused.append(1/np.sum(alpha))
-        
-    return np.array(mean_fused), np.array(var_fused)
+    yMT = np.transpose(yM, (0,2,1))
+    sigMT = np.transpose(sigM, (0,2,1))
+    
+    # rho1 = np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM)
+    # rho2 = np.sqrt(sigMT)/np.sqrt((yMT-yM)**2 + sigMT)
+    
+    # rho = (sigM/(sigM+sigMT))*np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM) + \
+    #     (sigMT/(sigM+sigMT))*np.sqrt(sigMT)/np.sqrt((yMT-yM)**2 + sigMT)
+    
+    # sigma = rho*zeroM*(np.sqrt(sigM*sigMT)) + varDiag
+    
+    # alpha = np.linalg.inv(sigma)
+    
+    alpha = np.linalg.pinv(((sigM/(sigM+sigMT))*np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM) + \
+        (sigMT/(sigM+sigMT))*np.sqrt(sigMT)/np.sqrt((yMT-yM)**2 + sigMT))*zeroM*(np.sqrt(sigM*sigMT)) + unoM*sigM)
+    
+    w = (np.sum(alpha,1)/np.sum(alpha))
+    
+    mean = np.sum(w@y, axis = 0)
+    var = 1/np.sum(alpha,(1,2))
+    
+    return mean, var
 
 class model_reification():
     def __init__(self, x_train, y_train, l_param, sigma_f, sigma_n, model_mean,
@@ -158,12 +139,6 @@ class model_reification():
         return self.fused_GP
         
     def update_GP(self, new_x, new_y, model_index):
-        
-        # new_x = np.expand_dims(new_x, axis=0)
-        # print(new_x.shape)
-        # print(self.x_train[model_index].shape)
-        # self.x_train[model_index] = np.append(self.x_train[model_index], new_x)
-        # self.y_train[model_index] = np.append(self.y_train[model_index], new_y)
         self.x_train[model_index] = np.vstack((self.x_train[model_index], new_x))
         self.y_train[model_index] = np.append(self.y_train[model_index], new_y)
         self.gp_models[model_index].update(new_x, new_y, self.model_hp['sn'][model_index], False)
@@ -194,7 +169,7 @@ class model_reification():
                 plt.savefig("results/{}/figures/model{}_{}.png".format(file_dir,i,iteration))
                 plt.close(1)
             except:
-                print("model{}_{} Plot Failed".format(i,iteration))
+                pass
             
         tc_out = tc_gp.predict(self.x_true)
         try:
@@ -203,4 +178,66 @@ class model_reification():
             plt.savefig("results/{}/figures/RVE_{}.png".format(file_dir,iteration))
             plt.close(1)
         except:
-            print("RVE_{} Plot Failed".format(iteration))
+            pass
+ 
+            
+def reification_old(y, sig):
+    """
+    This function is coded to enable the reification of any number of models.
+    """
+    mean_fused = []
+    var_fused = []
+    
+    rtest = []
+        
+    rho_bar = []
+    for i in range(len(y)-1):
+        for j in range(len(y)-i-1):
+            rho1 = np.divide(np.sqrt(sig[i]), np.sqrt((y[i]-y[j+i+1])**2 + sig[i]))
+            rtest.append(rho1)
+            rho2 = np.divide(np.sqrt(sig[j+i+1]), np.sqrt((y[j+i+1]-y[i])**2 + sig[j+i+1]))
+            rtest.append(rho2)
+            rho_bar_ij = np.divide(sig[j+i+1], (sig[i]+sig[j+i+1]))*rho1 + np.divide(sig[i], (sig[i]+sig[j+i+1]))*rho2
+            rho_bar_ij[np.where(rho_bar_ij>0.99)] = 0.99
+            rho_bar.append(rho_bar_ij)
+    
+    mm = rho_bar[0].shape[0]
+            
+    sigma = np.zeros((len(y), len(y)))
+    
+    for i in range(mm):
+        for j in range(len(y)):
+            for k in range(len(y)-j):
+                jj = j
+                kk = k+j
+                if jj == kk:
+                    sigma[jj,kk] = sig[jj][i]
+                else:
+                    sigma[jj,kk] = rho_bar[kk+jj-1][i]*np.sqrt(sig[jj][i]*sig[kk][i])
+                    sigma[kk,jj] = rho_bar[kk+jj-1][i]*np.sqrt(sig[jj][i]*sig[kk][i])
+
+        alpha = np.linalg.inv(sigma)
+        
+        w = np.sum(alpha,1)/np.sum(alpha)
+        mu = y[0][i]
+        for j in range(len(y)-1):
+            mu = np.hstack((mu,y[j+1][i]))
+        mean = np.sum(w@mu)
+        
+        mean_fused.append(mean)
+        var_fused.append(1/np.sum(alpha))
+        
+    return np.array(mean_fused), np.array(var_fused)
+               
+    
+    
+if __name__ == "__main__":
+    from pickle import load
+    
+    with open("reificationIn", 'rb') as f:
+        data = load(f)
+        
+    mean, var = reification(*data)
+    
+    
+    

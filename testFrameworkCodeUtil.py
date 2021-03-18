@@ -80,14 +80,14 @@ class RVE_GP():
     def predict(self, x_predict):
         if len(x_predict.shape) == 1:
             x_predict = np.expand_dims(x_predict, axis=0)
-        x = np.ones((x_predict.shape[0],4))        
+        # x = np.ones((x_predict.shape[0],4))        
         # x[:,0] = (x_predict[:,0]-650)/200 #Temperature
         # x[:,1] = x_predict[:,1]           #wt% C
         # x[:,2] = x[:,2]/2           #wt% Si
         # x[:,3] = x[:,3]/3           #wt% Mn
-        mean, var = self.gp.predict_var(x)
+        mean, var = self.gp.predict_var(x_predict)
         
-        return mean*self.std + self.mean
+        return (mean*self.std + self.mean)
     
     def test_fit(self):
         data = pd.read_excel('../data/rve_data.xlsx')
@@ -283,7 +283,7 @@ def isostrain_IS(x,ep):
     stress = np.zeros((mm,10001))
     str_ = np.zeros((mm,1))
     dsde = np.zeros((mm,1))
-    cc = np.zeros((mm,1))
+    cc = np.zeros((mm,))
     index = np.zeros((mm,90))
     
     for ii in range(mm):
@@ -338,7 +338,7 @@ def isostress_IS(x,ep):
     # stress = np.zeros((mm,10001))
     str_ = np.zeros((mm,1))
     dsde = np.zeros((mm,1))
-    cc = np.zeros((mm,1))
+    cc = np.zeros((mm,))
         
     for ii in range(mm):
         # yield strength of the phases
@@ -398,7 +398,7 @@ def isowork_IS(x,ep):
     x_Mn = x[:,2]
     x_Si = x[:,3]
     
-    cc = np.zeros((mm,1))
+    cc = np.zeros((mm,))
         
     for ii in range(mm):
         # yield strength of the phases
@@ -481,7 +481,7 @@ def EC_Mart_IS(x,ep):
     x_Si = x[:,3]
     
     
-    cc = np.zeros(mm)
+    cc = np.zeros((mm))
     
     for ii in range(mm):
         

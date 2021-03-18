@@ -7,6 +7,7 @@ Created on Thu Nov 12 13:51:02 2020
 
 import numpy as np
 from scipy.stats import norm
+from scipy import random
 
 def knowledge_gradient(M, sn, mu, sigma):
     """
@@ -92,17 +93,17 @@ def knowledge_gradient(M, sn, mu, sigma):
 def expected_improvement(curr_max, xi, y, std):
     pdf = norm.pdf(y)
     cdf = norm.cdf(y)
-    
+
     EI = (y-curr_max-xi)*pdf + std*cdf
-    
+        
     max_val = np.max(EI)
     x_star = np.where(EI == max_val)[0]
     
     return max_val, x_star[0], EI
 
 
-def thompson_sampling(x_test, gp):
-    tsVal = gp.sample_posterior(x_test)
+def thompson_sampling(y, std):
+    tsVal = random.normal(loc=y, scale=std)
     nu_star = np.max(tsVal)
     
     x_star = int(np.where(tsVal == nu_star)[0])

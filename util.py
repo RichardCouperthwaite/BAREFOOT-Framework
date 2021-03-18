@@ -244,6 +244,7 @@ def calculate_EI(param):
                                 kernel)
     # Use the fused model to obtain the mean and variance at all test points
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    fused_var = np.diag(fused_var)
     # Find the index of the test point that has the maximum of the fused model
     index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
     # if there are more than on maxima, use the first index
@@ -309,6 +310,7 @@ def calculate_TS(param):
                                 kernel)
     # Use the fused model to obtain the mean and variance at all test points
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    fused_var = np.diag(fused_var)
     # Find the index of the test point that has the maximum of the fused model
     index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
     # if there are more than on maxima, use the first index
@@ -319,7 +321,7 @@ def calculate_TS(param):
     # Add the maximum of the fused model to the output  
     output[0] = np.max(fused_mean)
     # Calculate the expected improvement for all test point
-    nu_star, x_star, NU = thompson_sampling(x_test, model_temp.fused_GP)
+    nu_star, x_star, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
     # Add the maximum knowledge gradient and the index of the test point to the
     # output list
     output[1] = nu_star/cost[jj]
@@ -356,29 +358,47 @@ def fused_calculate(param):
     with open("data/reificationObj", 'rb') as f:
         model_temp = load(f)
     (finish, model_data, x_fused, fused_model_HP, \
-         kernel, x_test, curr_max, xi) = data[param[0]]
-    print("starting TS Calc | {}".format(len(x_test)))
+         kernel, x_test, curr_max, xi, sampleOpt) = data[param[0]]
     # Create the fused model
     model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
                                 fused_model_HP[0], 0.1, 
                                 kernel)
-    """
-    Greedy Sampling Approach
-    """
-    # Predict the mean and variance at each test point
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
-    # Find the maximum of the fused model
-    nu_star = np.max(fused_mean)
-    try:
-        x_star = int(np.nonzero(fused_mean == nu_star)[0])
-    except TypeError:
-        x_star = int(np.nonzero(fused_mean == nu_star)[0][0])
-    """
-    Thompson sampling approach
-    This approach uses the uncertainty, but is quite significantly slower
-    """
-    # nu_star, x_star, NU = thompson_sampling(x_test, model_temp.fused_GP)
-    
+    if sampleOpt == "TS":
+        """
+        Thompson sampling approach
+        This approach uses the uncertainty, but is quite significantly slower
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+    elif sampleOpt == "EI":
+        """
+        Expected Improvement approach
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = expected_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+    elif sampleOpt == "KG":
+        """
+        Knowledge Gradient approach
+        """
+        nu_star, x_star, NU = knowledge_gradient(x_test.shape[0], 
+                                                  0.1, 
+                                                  fused_mean, 
+                                                  fused_var)
+    else:
+        """
+        Greedy Sampling Approach
+        """
+        # Find the maximum of the fused model
+        nu_star = np.max(fused_mean)
+        try:
+            x_star = int(np.nonzero(fused_mean == nu_star)[0])
+        except TypeError:
+            x_star = int(np.nonzero(fused_mean == nu_star)[0][0])
+        
     # return the maximum value and the index of the test point that corresponds
     # with the maximum value
     return [nu_star,x_star], x_test.shape[0]
