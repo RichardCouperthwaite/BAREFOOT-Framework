@@ -54,6 +54,8 @@ The code below is included in the "barefoot.py" file as a test, and provides the
 
 ```
 import matplotlib.pyplot as plt
+from barefoot import barefoot
+import numpy as np
 
 def rom1(x):
     x = x*(2)+0.5
