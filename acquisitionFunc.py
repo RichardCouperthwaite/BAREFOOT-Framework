@@ -18,7 +18,9 @@ def knowledge_gradient(M, sn, mu, sigma):
     be the truth model.
     
     Implementation based on the work by Frazier, Powell, Dayanik
-    [1]P. Frazier, W. Powell, and S. Dayanik, “The Knowledge-Gradient Policy for Correlated Normal Beliefs,” INFORMS Journal on Computing, vol. 21, no. 4, pp. 599–613, May 2009.
+    [1]P. Frazier, W. Powell, and S. Dayanik, “The Knowledge-Gradient Policy for 
+    Correlated Normal Beliefs,” INFORMS Journal on Computing, vol. 21, no. 4, pp. 
+    599–613, May 2009.
     
     M: the number of samples
     sn: the noise of the model
@@ -91,6 +93,37 @@ def knowledge_gradient(M, sn, mu, sigma):
     return nu_star, x_star, NU
 
 def expected_improvement(curr_max, xi, y, std):
+    """
+    This function calculates the maximum expected improvement for a selection of
+    test points from the surrogate model of an objective function with a mean and variance.
+    
+    J. Mockus, V. Tiesis, and A. Zilinskas. Toward Global Optimization, volume 2,
+    chapter The Application of Bayesian Methods for Seeking the Extremum, pages
+    117{128. Elsevier, 1978.
+    
+    Parameters
+    ----------
+    curr_max : float
+        This value is the best value of the objective function that hase been obtained.
+    xi : float
+        This parameter defines how much the algorithm exploits, or explores.
+    y : 1D vector Numpy Array
+        The mean of the surrogate model at all test points used in the optimization.
+    std : 1D vector Numpy Array
+        The standard deviation from the surrogate model at all test points 
+        used in the optimization.
+
+    Returns
+    -------
+    max_val : float
+        The maximum expected improvement value.
+    x_star : integer
+        The index of the test point with the maximum expected improvement value.
+    EI : TYPE
+        Expected improvement values for all test points.
+
+    """
+    
     pdf = norm.pdf(y)
     cdf = norm.cdf(y)
 
@@ -101,8 +134,109 @@ def expected_improvement(curr_max, xi, y, std):
     
     return max_val, x_star[0], EI
 
+def probability_improvement(curr_max, xi, y, std):
+    """
+    This function calculates the maximum probability improvement for a selection of
+    test points from the surrogate model of an objective function with a mean and variance.
+    
+    Kushner, H. J. “A New Method of Locating the Maximum Point of an Arbitrary 
+    Multipeak Curve in the Presence of Noise.” Journal of Basic Engineering 86, 
+    no. 1 (March 1, 1964): 97–106. https://doi.org/10.1115/1.3653121.
+    
+    Parameters
+    ----------
+    curr_max : float
+        This value is the best value of the objective function that hase been obtained.
+    xi : float
+        This parameter defines how much the algorithm exploits, or explores.
+    y : 1D vector Numpy Array
+        The mean of the surrogate model at all test points used in the optimization.
+    std : 1D vector Numpy Array
+        The standard deviation from the surrogate model at all test points 
+        used in the optimization.
+
+    Returns
+    -------
+    max_val : float
+        The maximum probability of improvement value.
+    x_star : integer
+        The index of the test point with the maximum probability of improvement value.
+    PI : TYPE
+        Probability of improvement values for all test points.
+
+    """
+    
+    PI = norm.cdf((y-curr_max-xi)/std)
+    max_val = np.max(PI)
+    x_star = np.where(PI == max_val)[0]
+    
+    return max_val, x_star[0], PI
+
+def upper_conf_bound(kt, y, std):
+    """
+    This function calculates the Upper Confidence Bound for a selection of
+    test points from the surrogate model of an objective function with a mean and variance.
+    
+    D. D. Cox and S. John. SDO: A statistical method for global optimization. In
+    M. N. Alexandrov and M. Y. Hussaini, editors, Multidisciplinary Design Opti-
+    mization: State of the Art, pages 315{329. SIAM, 1997.
+        
+    Parameters
+    ----------
+    curr_max : float
+        This value is the best value of the objective function that hase been obtained.
+    kt : float
+        This parameter is a combined parameter for the sqrt(beta*nu).
+    y : 1D vector Numpy Array
+        The mean of the surrogate model at all test points used in the optimization.
+    std : 1D vector Numpy Array
+        The standard deviation from the surrogate model at all test points 
+        used in the optimization.
+
+    Returns
+    -------
+    max_val : float
+        The maximum upper confidence bound value.
+    x_star : integer
+        The index of the test point with the maximum upper confidence bound value.
+    UCB : TYPE
+        Upper confidence bound values for all test points.
+
+    """
+    
+    UCB = y+kt*std
+    max_val = np.max(UCB)
+    x_star = np.where(UCB == max_val)[0]
+    
+    return max_val, x_star[0], UCB
 
 def thompson_sampling(y, std):
+    """
+    Thompson sampling was first described by Thompson in 1933 as a solution to
+    the multi-arm bandit problem.
+    
+    Thompson, W. 1933. “On the likelihood that one unknown probability
+    exceeds another in view of the evidence of two samples”. Biometrika.
+    25(3/4): 285–294.
+
+    Parameters
+    ----------
+    y : 1D vector Numpy Array
+        The mean of the surrogate model at all test points used in the optimization.
+    std : 1D vector Numpy Array
+        The standard deviation from the surrogate model at all test points 
+        used in the optimization.
+
+    Returns
+    -------
+    nu_star : float
+        The maximum value from the Thompson Sampling.
+    x_star : integer
+        The index of the test point with the maximum value.
+    tsVal : TYPE
+        Sampled values for all test points.
+    """
+    
     tsVal = random.normal(loc=y, scale=std)
     nu_star = np.max(tsVal)
     

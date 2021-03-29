@@ -13,19 +13,23 @@ from acquisitionFunc import expected_improvement, knowledge_gradient, thompson_s
 import pandas as pd
 from pickle import load
 
-# from testFrameworkCodeUtil import ThreeHumpCamel, ThreeHumpCamel_LO1, ThreeHumpCamel_LO2, ThreeHumpCamel_LO3, plotResults 
-# from testFrameworkCodeUtil import isostress_IS, isostrain_IS, isowork_IS, EC_Mart_IS, secant1_IS, TC_GP, RVE_GP
-
 def k_medoids(sample, num_clusters):
+    # clusters the samples into the number of clusters (num_clusters) according 
+    # to the K-Medoids clustering algorithm and returns the medoids and the 
+    # samples that belong to each cluster
     D = distance_matrix(sample, sample)
     M, C = kMedoids(D, num_clusters)
     return M, C  
 
 def call_model(param):
+    # this function is used to call any model given in the dictionary of
+    # parameters (param)
     output = param["Model"](param["Input Values"])
     return output
 
 def cartesian(*arrays):
+    # combines a set of arrays (one per dimension) so that all combinations of
+    # all the arrays are in a single matrix with columns for each dimension
     mesh = np.meshgrid(*arrays)  # standard numpy meshgrid
     dim = len(mesh)  # number of dimensions
     elements = mesh[0].size  # number of elements, any index will do
@@ -34,6 +38,12 @@ def cartesian(*arrays):
     return reshape
 
 def sampleDesignSpace(ndim, nsamples, sampleScheme):
+    # This function provides three approaches to sampling of the design space
+    # firstly, Latin hypercube sampling (LHS)
+    # secondly, a grid based appraoch (Grid)
+    # and the final approach allows for custom sampling of specific values
+    # in this last approach, any additional samples required are found by 
+    # Latin Hypercube sampling
     if sampleScheme == "LHS":
         x = lhs(ndim, nsamples)
     if sampleScheme == "Grid":
@@ -54,7 +64,11 @@ def sampleDesignSpace(ndim, nsamples, sampleScheme):
             x = pd.concat((dfInputs, x_other))         
     return np.array(x)
 
-def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], sampleScheme="LHS", opt_sample_size=True):
+def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], 
+                      lb=[], ub=[], func=[], sampleScheme="LHS", opt_sample_size=True,
+                      evaluatedPoints=[]):
+    # This function handles the sampling of the design space and the application 
+    # of the constraints to ensure that any points sampled satisfy the constratints
     sampleSelection = True
     constraints = np.zeros((5))
     if A != []:
@@ -122,8 +136,23 @@ def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], 
                 constraints[4] = 0
             except:
                 pass
+        
+        # Duplicate Check: if a particular sample has been queried from all models
+        # it needs to be removed from the potential samples. This won't stop duplicates
+        # getting in since we can't exclude a point till it has been evaluated from all models
+        if evaluatedPoints != []:
+            all_test = np.zeros_like(constr_check)
+            for evalPoints in evaluatedPoints:
+                res = (x[:, None] == evalPoints).all(-1).any(-1)
+                all_test += res
+            all_test[np.where(all_test<len(evaluatedPoints))] = 0
+            
+            constr_check += all_test
+            
         index = np.where(constr_check == 0)[0]
         
+        # If it is chosen to optimize the sample size, the loop is continued to 
+        # ensure that as close to the required number of samples are acquired
         if opt_sample_size:
             if index.shape[0] >= samples:
                 x = x[index[0:samples],:]
@@ -142,6 +171,8 @@ def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], 
                     x = x_largest
                     sampleSelection = False
                     const_satisfied = False
+        # if the choice is to not optimize, the samples that pass all constraints
+        # will be returned. This can lead to less samples than specified.
         else:
             x = x[index,:]
             sampleSelection = False
@@ -283,7 +314,7 @@ def calculate_TS(param):
     ----------
     param : tuple
         The input is a tuple that contains the data required for calculating the
-        expected improvement of a fused model constructed out of a reification 
+        Thompson Sampling of a fused model constructed out of a reification 
         model object.
 
     Returns
@@ -371,6 +402,7 @@ def fused_calculate(param):
         """
         fused_var = np.diag(fused_var)
         nu_star, x_star, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+        output = [nu_star, x_star]
     elif sampleOpt == "EI":
         """
         Expected Improvement approach
@@ -380,6 +412,7 @@ def fused_calculate(param):
                                                     xi, 
                                                     fused_mean, 
                                                     fused_var)
+        output = [nu_star, x_star]
     elif sampleOpt == "KG":
         """
         Knowledge Gradient approach
@@ -388,6 +421,28 @@ def fused_calculate(param):
                                                   0.1, 
                                                   fused_mean, 
                                                   fused_var)
+        output = [nu_star, x_star]
+    elif sampleOpt == "Hedge":
+        output = []
+        nu, x, NU = knowledge_gradient(x_test.shape[0], 
+                                                  0.1, 
+                                                  fused_mean, 
+                                                  fused_var)
+        output.append([nu, x])
+        fused_var = np.diag(fused_var)
+        nu, x, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+        output.append([nu, x])
+        nu, x, NU = expected_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output.append([nu, x])
+        nu = np.max(fused_mean)
+        try:
+            x = int(np.nonzero(fused_mean == nu)[0])
+        except TypeError:
+            x = int(np.nonzero(fused_mean == nu)[0][0])
+        output.append([nu, x])
     else:
         """
         Greedy Sampling Approach
@@ -398,10 +453,210 @@ def fused_calculate(param):
             x_star = int(np.nonzero(fused_mean == nu_star)[0])
         except TypeError:
             x_star = int(np.nonzero(fused_mean == nu_star)[0][0])
+        output = [nu_star, x_star]
         
     # return the maximum value and the index of the test point that corresponds
     # with the maximum value
-    return [nu_star,x_star], x_test.shape[0]
+    return output, x_test.shape[0]
 
-if __name__ == "__main__":
-    x, check = apply_constraints(100, 7, resolution=3, sampleScheme="Custom")
+def calculate_GPHedge(param):
+    """
+    Parameters
+    ----------
+    param : tuple
+        The input is a tuple that contains the data required for calculating the
+        values from all acquisition functions for use in the GP Hedge portfolio
+        optimization appraoch.
+
+    Returns
+    -------
+    results : list
+        The output from the module contains the maximum of all acquisition functions
+        and the x values associated with these points.
+
+    """
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (finish, model_data, x_fused, fused_model_HP, \
+     kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
+    # Initialize the output  
+    output = [[0,[],[],jj,kk,mm],
+              [0,[],[],jj,kk,mm],
+              [0,[],[],jj,kk,mm],
+              [0,[],[],jj,kk,mm]]
+    # Create the fused model
+    model_temp.update_GP(*model_data)
+    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    # Use the fused model to obtain the mean and variance at all test points
+    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    
+    # Find the index of the test point that has the maximum of the fused model
+    index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
+    # if there are more than on maxima, use the first index
+    try:
+        index_max = index_max_[0]
+    except IndexError:
+        index_max = index_max_
+    # Add the maximum of the fused model to the output  
+    output[0][0] = np.max(fused_mean)
+    output[1][0] = np.max(fused_mean)
+    output[2][0] = np.max(fused_mean)
+    output[3][0] = np.max(fused_mean)
+
+    nu_star = []
+    x_star = []
+    
+    
+    #################
+    ################
+    # Need to convert this next section to run in parallel to reduce the time
+    
+    """
+    Knowledge Gradient approach
+    """
+    nu_star, x_star, NU = knowledge_gradient(x_test.shape[0], 
+                                              0.1, 
+                                              fused_mean, 
+                                              fused_var)
+    output[0][1] = nu_star/cost[jj]
+    output[0][2] = x_star
+
+    """
+    Thompson sampling approach
+    This approach uses the uncertainty, but is quite significantly slower
+    """
+    fused_var = np.diag(fused_var)
+    nu_star, x_star, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+    output[1][1] = nu_star/cost[jj]
+    output[1][2] = x_star
+    
+    """
+    Expected Improvement approach
+    """
+    nu_star, x_star, NU = expected_improvement(curr_max, 
+                                        0.01, 
+                                        fused_mean, 
+                                        fused_var)
+    output[2][1] = nu_star/cost[jj]
+    output[2][2] = x_star
+   
+    """
+    Greedy Sampling Approach
+    """
+    # Find the maximum of the fused model
+    nu_star = np.max(fused_mean)
+    try:
+        x_star = int(np.nonzero(fused_mean == nu_star)[0])
+    except TypeError:
+        x_star = int(np.nonzero(fused_mean == nu_star)[0][0])
+    output[3][1] = nu_star/cost[jj]
+    output[3][2] = x_star
+    
+    
+    
+    # Add the actual input values for the maximum of the fused model
+    if len(x_test.shape) > 1:
+        for ii in range(x_test.shape[1]):
+            output[0].append(x_test[index_max,ii])
+            output[1].append(x_test[index_max,ii])
+            output[2].append(x_test[index_max,ii])
+            output[3].append(x_test[index_max,ii])
+    else:
+        output[0].append(x_test[index_max])
+        output[1].append(x_test[index_max])
+        output[2].append(x_test[index_max])
+        output[3].append(x_test[index_max])
+        
+    for i in range(x_test.shape[1]):
+        output[0].append(x_test[output[0][2],i])
+        output[1].append(x_test[output[1][2],i])
+        output[2].append(x_test[output[2][2],i])
+        output[3].append(x_test[output[3][2],i])
+        
+    return output
+
+def calculate_Greedy(param):
+    """
+    Parameters
+    ----------
+    param : tuple
+        The input is a tuple that contains the data required for calculating the
+        Maximum of a fused model constructed out of a reification 
+        model object for Greedy optimization
+
+    Returns
+    -------
+    results : list
+        The output from the module contains information on some of the parameters
+        used as inputs, as well as the maximum expected improvement value. Included
+        in the output are the values for all the inputs that correspond to the maximum of the fused model
+
+    """
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (finish, model_data, x_fused, fused_model_HP, \
+     kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
+    # Initialize the output  
+    output = [0,0,0,jj,kk,mm]
+    # Create the fused model
+    model_temp.update_GP(*model_data)
+    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    # Use the fused model to obtain the mean and variance at all test points
+    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    fused_var = np.diag(fused_var)
+    # Find the index of the test point that has the maximum of the fused model
+    index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
+    # if there are more than on maxima, use the first index
+    if index_max_[0].shape[0] > 1:
+        index_max = int(index_max_[0][0])
+    else:
+        index_max = int(index_max_[0])
+    # try:
+    #     index_max = int(index_max_)
+    # except TypeError:
+    #     try:
+    #         index_max = int(index_max_[0])
+    #     except TypeError:
+    #         index_max = int(index_max_[0][0])
+    # Add the maximum of the fused model to the output  
+    output[0] = np.max(fused_mean)
+    # Add the maximum knowledge gradient and the index of the test point to the
+    # output list
+    output[1] = np.max(fused_mean)
+    output[2] = index_max
+    # Add the actual input values for the maximum of the fused model
+    for kk in range(2):
+        if len(x_test.shape) > 1:
+            for ii in range(x_test.shape[1]):
+                output.append(x_test[index_max,ii])
+        else:
+            output.append(x_test[index_max])
+    # Return the results
+    # print(output)
+    return output   
+
+
+def evaluateFusedModel(param):
+    # in order to update the gains for the GP Hedge Portfolio optimization scheme
+    # it is necessary to query the next best points predicted by all the acquisition
+    # functions.
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (finish, model_data, x_fused, fused_model_HP, \
+         kernel, x_test, curr_max, xi, acqIndex) = data[param[0]]
+    # Create the fused model
+    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    return [acqIndex, fused_mean]

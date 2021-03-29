@@ -10,6 +10,9 @@ from gpModel import gp_model
 import matplotlib.pyplot as plt
 
 def reification(y,sig):    
+    # This function takes lists of means and variances from multiple models and 
+    # calculates the fused mean and variance following the Reification/Fusion approach
+    # developed by D. Allaire. This function can handle any number of models.
     yM = np.tile(y, (len(y),1,1)).transpose()
     sigM = np.tile(sig, (len(y),1,1)).transpose()
     
@@ -19,14 +22,14 @@ def reification(y,sig):
     yMT = np.transpose(yM, (0,2,1))
     sigMT = np.transpose(sigM, (0,2,1))
     
+    # The following individual value calculations are compacted into the single calculation
+    # for alpha, but are left here to aid in understanding of the equation
+    
     # rho1 = np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM)
     # rho2 = np.sqrt(sigMT)/np.sqrt((yMT-yM)**2 + sigMT)
-    
     # rho = (sigM/(sigM+sigMT))*np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM) + \
     #     (sigMT/(sigM+sigMT))*np.sqrt(sigMT)/np.sqrt((yMT-yM)**2 + sigMT)
-    
     # sigma = rho*zeroM*(np.sqrt(sigM*sigMT)) + varDiag
-    
     # alpha = np.linalg.inv(sigma)
     
     alpha = np.linalg.pinv(((sigM/(sigM+sigMT))*np.sqrt(sigM)/np.sqrt((yM-yMT)**2 + sigM) + \
@@ -40,6 +43,11 @@ def reification(y,sig):
     return mean, var
 
 class model_reification():
+    """
+    This python class has been developed to aid with the reification/fusion approach.
+    The class provides methods that automate much of the process of defining the 
+    discrepancy GPs and calculating the fused mean and variance
+    """
     def __init__(self, x_train, y_train, l_param, sigma_f, sigma_n, model_mean,
                  model_std, l_param_err, sigma_f_err, sigma_n_err, 
                  x_true, y_true, num_models, num_dim, kernel):
@@ -113,6 +121,11 @@ class model_reification():
         return gp_error_models
     
     def create_fused_GP(self, x_test, l_param, sigma_f, sigma_n, kernel):
+        """
+        In this function we create the fused model by calculating the fused mean
+        and variance at the x_test values and then fitting a GP model using the
+        given hyperparameters
+        """
         model_mean = []
         model_var = []
         for i in range(len(self.gp_models)):
@@ -139,51 +152,49 @@ class model_reification():
         return self.fused_GP
         
     def update_GP(self, new_x, new_y, model_index):
+        """
+        Updates a given model in the reification object with new training data
+        amd retrains the GP model
+        """
         self.x_train[model_index] = np.vstack((self.x_train[model_index], new_x))
         self.y_train[model_index] = np.append(self.y_train[model_index], new_y)
         self.gp_models[model_index].update(new_x, new_y, self.model_hp['sn'][model_index], False)
     
     def update_truth(self, new_x, new_y):
+        """
+        Updates the truth model in the reification object with new training data
+        and then recalculates the error models
+        """
         self.x_true = np.vstack((self.x_true, new_x))
         self.y_true = np.append(self.y_true, new_y)
         self.gp_err_models = self.create_error_models()
         
     def predict_low_order(self, x_predict, index):
+        """
+        Provides a prediction from the posterior distribution of one of the 
+        low order models
+        """
         gpmodel_mean, gpmodel_var = self.gp_models[index].predict_var(x_predict)
         gpmodel_mean = gpmodel_mean * self.model_std[index] + self.model_mean[index]
         gpmodel_var = gpmodel_var * (self.model_std[index]**2)
         return gpmodel_mean, gpmodel_var
     
     def predict_fused_GP(self, x_predict):
+        """
+        Provides a prediction from the posterior distribution of the Fused Model
+        """
         gpmodel_mean, gpmodel_var = self.fused_GP.predict_var(x_predict)
         gpmodel_mean = gpmodel_mean * self.fused_y_std + self.fused_y_mean
         gpmodel_var = gpmodel_var * (self.fused_y_std**2)
         return gpmodel_mean, np.diag(gpmodel_var)
     
-    def plot_models(self, tc_gp, iteration, file_dir):
-        for i in range(len(self.gp_models)):
-            tc_out = tc_gp.predict(self.x_train[i])
-            try:
-                plt.figure(1)
-                plt.scatter(tc_out[:,0], self.y_train[i])
-                plt.savefig("results/{}/figures/model{}_{}.png".format(file_dir,i,iteration))
-                plt.close(1)
-            except:
-                pass
-            
-        tc_out = tc_gp.predict(self.x_true)
-        try:
-            plt.figure(1)
-            plt.scatter(tc_out[:,0], self.y_true)
-            plt.savefig("results/{}/figures/RVE_{}.png".format(file_dir,iteration))
-            plt.close(1)
-        except:
-            pass
- 
             
 def reification_old(y, sig):
     """
-    This function is coded to enable the reification of any number of models.
+    This function is coded to enable the reification of any number of models. 
+    This function relied on python loops and so was renovated to obtain the function
+    above. This is left for potential additional understanding of the computational 
+    approach used.
     """
     mean_fused = []
     var_fused = []
@@ -228,16 +239,4 @@ def reification_old(y, sig):
         var_fused.append(1/np.sum(alpha))
         
     return np.array(mean_fused), np.array(var_fused)
-               
-    
-    
-if __name__ == "__main__":
-    from pickle import load
-    
-    with open("reificationIn", 'rb') as f:
-        data = load(f)
-        
-    mean, var = reification(*data)
-    
-    
     

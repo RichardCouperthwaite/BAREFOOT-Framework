@@ -27,6 +27,7 @@ class gp_model:
         self.gp = self.create_gp()
         
     def create_kernel(self):
+        # This function creates the covariance function kernel for the Gaussian Process
         if self.kern == 'SE':
             return self.sigma_f * kernels.ExpSquaredKernel(self.l_param, ndim=self.n_dim)
         elif self.kern == 'M32':
@@ -35,19 +36,26 @@ class gp_model:
             return self.sigma_f * kernels.Matern52Kernel(self.l_param, ndim=self.n_dim)
     
     def create_gp(self):
+        # This function uses the kernel defined above to compute and train the Gaussian Process model
         gp = GP(kernel=self.kk, mean=self.mean)
         gp.compute(self.x_train, self.sigma_n)
         return gp
     
     def predict_cov(self, x_pred):
+        # This function is used to predict the mean and the full covariance 
+        # matrix for the test points (x_pred)
         mean, sigma = self.gp.predict(self.y_train, x_pred, kernel = self.kk, return_cov=True, return_var=False)
         return mean, sigma
     
     def predict_var(self, x_pred):
+        # This function is used to predict the mean and the variance (the diagonal of 
+        # the full covariance matrix) for the test points (x_pred)
         mean, var = self.gp.predict(self.y_train, x_pred, kernel = self.kk, return_cov=False, return_var=True)
         return mean, var
     
     def update(self, new_x_data, new_y_data, new_y_err, err_per_point):
+        # This function is used to update and retrain the GP model when new
+        # training data is available
         self.x_train = np.vstack((self.x_train, new_x_data))
         self.y_train = np.append(self.y_train, new_y_data)
         if err_per_point:
@@ -56,12 +64,18 @@ class gp_model:
         self.gp = self.create_gp()
     
     def sample_posterior(self, x_test):
+        # This function provides a random sampling from the Gaussian Process
+        # posterior distribution
         return self.gp.sample_conditional(self.y_train, x_test, size=1)
         
     def log_likelihood(self):
+        # This function computes the log likelihood of the training data given
+        # the hyperparameters
         return self.gp.log_likelihood(self.y_train, quiet=True)
     
     def get_hyper_params(self):
+        # This function obtains the hyperparameters from the trained GP and
+        # modifies them to be consistent with other Gaussian Process implementations
         curr_params = self.gp.get_parameter_vector()
         params = []
         for i in range(len(curr_params)):
@@ -72,6 +86,7 @@ class gp_model:
         return np.array(params)
         
     def hp_optimize(self, meth="L-BFGS-B", update=False):
+        # This function can be used ot optimize the GP hyperparameters
         import scipy.optimize as op
         gp = deepcopy(self)
         p0 = gp.gp.get_parameter_vector()

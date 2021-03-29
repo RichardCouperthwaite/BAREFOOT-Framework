@@ -16,11 +16,10 @@ from reificationFusion import model_reification
 import concurrent.futures
 from multiprocessing import cpu_count
 from copy import deepcopy
-from util import k_medoids, cartesian, call_model, apply_constraints, calculate_KG, calculate_EI, fused_calculate, calculate_TS
+from util import k_medoids, cartesian, call_model, apply_constraints
+from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_Greedy
+from util import calculate_GPHedge, evaluateFusedModel
 import logging
-
-# from testFrameworkCodeUtil import ThreeHumpCamel, ThreeHumpCamel_LO1, ThreeHumpCamel_LO2, ThreeHumpCamel_LO3, plotResults 
-# from testFrameworkCodeUtil import isostress_IS, isostrain_IS, isowork_IS, EC_Mart_IS, secant1_IS, TC_GP, RVE_GP
 
 class barefoot():
     def __init__(self, ROMModelList=[], TruthModel=[], calcInitData=True, 
@@ -28,7 +27,8 @@ class barefoot():
                  calculationName="Calculation", nDim=1, input_resolution=5, restore_calc=False,
                  updateROMafterTM=False, externalTM=False, acquisitionFunc="KG",
                  A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
-                 verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT"):
+                 verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT",
+                 maximize=True):
         """
         Python Class for Batch Reification/Fusion Optimization (BAREFOOT) Framework Calculations
 
@@ -103,7 +103,10 @@ class barefoot():
         # information and initialize
         
         if restore_calc:
-            self.__load_from_save(workingDir, calculationName)
+            if externalTM:
+                self.__external_TM_data_load(workingDir, calculationName)
+            else:
+                self.__load_from_save(workingDir, calculationName)
             self.timeCheck = time()
             self.logger.info("Previous Save State Restored")
         else:
@@ -121,7 +124,12 @@ class barefoot():
             self.calcInitData = calcInitData
             self.initDataPathorNum = initDataPathorNum
             self.currentIteration = -1
-            self.tmSampleOpt = tmSampleOpt
+            self.maximize = maximize
+            if tmSampleOpt in ["Hedge", "Greedy", "EI", "KG", "TS"]:
+                self.tmSampleOpt = tmSampleOpt
+            else:
+                self.tmSampleOpt = "Greedy"
+                self.logger.warning("Invalid Truth Model Acquisition Function! Using default (Greedy).")
             self.nDim = nDim
             self.res = input_resolution
             self.A = A
@@ -131,11 +139,19 @@ class barefoot():
             self.ub = ub
             self.lb = ub
             self.constr_func = func
-            self.sampleScheme = sampleScheme
+            if sampleScheme in ["LHS", "Grid", "Custom"]:
+                self.sampleScheme = sampleScheme
+            else:
+                self.sampleScheme = "LHS"
+                self.logger.warning("Invalid Sample Scheme! Using default (LHS).")
             self.keepSubRunning = keepSubRunning
             self.updateROMafterTM = updateROMafterTM
             self.externalTM = externalTM
-            self.acquisitionFunc = acquisitionFunc
+            if acquisitionFunc in ["Hedge", "Greedy", "EI", "KG", "TS"]:
+                self.acquisitionFunc = acquisitionFunc
+            else:
+                self.acquisitionFunc = "KG"
+                self.logger.warning("Invalid ROM Acquisition Function! Using default (KG).")
             self.__create_dir_and_files()
             self.__create_output_dataframes()
             self.__get_initial_data__()
@@ -184,7 +200,8 @@ class barefoot():
             labels1.append("x{}".format(ii))
             self.inputLabels.append("x{}".format(ii))
         self.evaluatedPoints = pd.DataFrame(columns=labels1)
-        # the iterationData df
+        # the iterationData df shows the iterations, model calls and maximum 
+        # value found
         labels2 = ["Iteration", "Max Found", "Calculation Time", "Truth Model"]
         for ii in range(len(self.ROM)):
             labels2.append("ROM {}".format(ii))
@@ -200,6 +217,16 @@ class barefoot():
         with open('{}/results/{}/iterationData'.format(self.workingDir, self.calculationName), 'wb') as f:
             dump(self.iterationData, f)
         self.iterationData.to_csv('{}/results/{}/iterationData.csv'.format(self.workingDir, self.calculationName))
+        # for the GP Hedge approach, the choice of model for each iteration is
+        # also saved to a separate file
+        hedge_out = {"ROM":[], "TM":[]}
+        if self.acquisitionFunc == "Hedge":
+            hedge_out["ROM"] = self.gpHedgeTrack
+        if self.tmSampleOpt == "Hedge":
+            hedge_out["TM"] = self.gpHedgeTrackTM
+        if self.acquisitionFunc == "Hedge" or self.tmSampleOpt == "Hedge":
+            with open('{}/results/{}/hedgeRecord'.format(self.workingDir, self.calculationName), 'wb') as f:
+                dump(hedge_out, f)
         self.logger.info("Dataframes Pickled and Dumped to Results Directory")
             
     def __save_calculation_state(self):
@@ -252,6 +279,16 @@ class barefoot():
         count = []
         param_index = 0
         self.maxTM = -np.inf
+        if self.acquisitionFunc == "Hedge":
+            self.gpHedgeHist = [[np.random.random()],[np.random.random()],
+                                [np.random.random()],[np.random.random()]]
+            self.gpHedgeProb = np.sum(self.gpHedgeHist, axis=1)
+            self.gpHedgeTrack = []
+        if self.tmSampleOpt == "Hedge":
+            self.gpHedgeHistTM = [[np.random.random()],[np.random.random()],
+                                [np.random.random()],[np.random.random()]]
+            self.gpHedgeProbTM = np.sum(self.gpHedgeHistTM, axis=1)
+            self.gpHedgeTrackTM = []
         # Check if data needs to be calculated or extracted
         if self.calcInitData:
             self.logger.debug("Start Calculation of Initial Data")
@@ -446,6 +483,9 @@ class barefoot():
         self.lowBound = lowBound
         self.modelParam = modelParam
         self.modelCosts = modelParam["costs"]
+        # The numpy linspace module will contract the distance below 1 if there
+        # are also values above 1. The approach implemented here avoids that
+        # situation
         if self.upperBound > 1:
             midway = (self.hpCount - (self.hpCount % 2))/2
             lower = np.linspace(self.lowBound, 1.0, num=int(midway), endpoint=False)
@@ -453,16 +493,20 @@ class barefoot():
             all_HP = np.append(lower, upper)
         else:
             all_HP = np.linspace(self.lowBound, self.upperBound, num=self.hpCount, endpoint=True)
+        # randomly combine the options for the hyperparameters into the hyperparameter sets
         self.fusedModelHP = np.zeros((self.hpCount,self.nDim+1))
         for i in range(self.hpCount):
             for j in range(self.nDim+1):
                 self.fusedModelHP[i,j] = all_HP[np.random.randint(0,self.hpCount)]
+        # create the evaluation points for determining the fused mean and
+        # variance
         temp = np.linspace(0,1,num=fusedPoints)
         arr_list = []
         for ii in range(self.nDim):
             arr_list.append(temp)
         self.xFused = cartesian(*arr_list)
         self.logger.debug("Create Reification Object")
+        # build the reification object with the combined inputs and initial values
         self.reificationObj = model_reification(self.ROMInitInput, self.ROMInitOutput, 
                                           self.modelParam['model_l'], 
                                           self.modelParam['model_sf'], 
@@ -483,13 +527,15 @@ class barefoot():
         self.logger.info("Reification Object Initialized. Ready for Calculations")
         
     def __restart_subs(self):
+        # This function restarts the sub processes if they have been closed
+        # while doing the Truth Model evaluations
         for kk in range(self.multinode):
             try:
                 os.remove("{}/subprocess/close{}".format(self.workingDir, kk))
                 os.remove("{}/subprocess/sub{}.control".format(self.workingDir, kk))
                 os.remove("{}/subprocess/sub{}.start".format(self.workingDir, kk))
                 self.logger.debug("Close File {} removed".format(kk))
-            except FileExistsError:
+            except FileNotFoundError:
                 self.logger.debug("Close File {} does not exist".format(kk))
                 
         calcPerProcess, all_started = self.__start_subprocesses__(self.multinode)
@@ -507,6 +553,9 @@ class barefoot():
                     self.logger.info("All Subprocess Jobs Started Successfully")
                     
     def __run_multinode_acq_func(self, x_test, new_mean, calcPerProcess):
+        # This function controls the parameter setup and transfer for the
+        # evaluation of the acquisition functions to determine the next best
+        # points for evaluating the Reduced Order Models when using subprocesses
         self.logger.info("Set Up Parameters for Acquisition Function Evaluation and submit to Subprocesses")
         parameters = []
         parameterFileData = []
@@ -515,8 +564,11 @@ class barefoot():
         sub_count = 0
         parameterIndex = 0
         parameterFileIndex = 0
+        # Pickle the reification object to be loaded by each of the subprocesses
+        # this reduces the amount of memory that needs to be transferred
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
+        # set up the parameters to be used in the calculations
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
                 model_temp = [np.expand_dims(x_test[kk], axis=0), 
@@ -530,6 +582,8 @@ class barefoot():
                     parameters.append([parameterIndex, parameterFileIndex])
                     parameterIndex += 1
                     
+                    # store every 1000 set of parameters in a file for use in the
+                    # subprocesses
                     if len(parameterFileData) == 1000:
                         with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                             dump(parameterFileData, f)
@@ -541,10 +595,13 @@ class barefoot():
                         fname = "{}".format(sub_count)
                         sub_fnames.append(fname)
                         
+                        # Send the trigger for the subprocess to pick up the data for
+                        # the calculations
                         with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_count), 'wb') as f:
                             control_param = [0, "iteration", self.acquisitionFunc]
                             dump(control_param, f)
-
+                        # dump the index for the parameter files for the subprocess
+                        # to load
                         with open("{}/subprocess/{}.dump".format(self.workingDir, fname), 'wb') as f:
                             dump(parameters, f)
                         
@@ -552,10 +609,11 @@ class barefoot():
                         count = 0
                         sub_count += 1
         
+        # dump the last of the parameter datasets
         if len(parameterFileData) != 0:
             with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                 dump(parameterFileData, f)
-        
+        # trigger the last subprocess and dump the index parameters
         if parameters != []:
             fname = "{}".format(sub_count)
             sub_fnames.append(fname)
@@ -568,13 +626,16 @@ class barefoot():
                 dump(parameters, f)
                 
         self.logger.info("Start Waiting for Results to Complete")
+        # the calculations will take some time, so start a sleep timer to wait
+        # for a minute before starting to check for results
         calc_start = time()
         sleep(60)
         
         finished = 0
         
         process_costs = np.zeros((len(sub_fnames)))
-        
+        # check for finished subprocess calculations, and only continue once
+        # all subprcesses calculations are completed
         while finished < len(sub_fnames):
             finished = 0
             proc_count = 0
@@ -584,14 +645,19 @@ class barefoot():
                     if control_param[0] == 1:
                         finished += 1
                         if process_costs[proc_count] == 0:
+                            # When a subprocess has completed, record how long
+                            # the subprocess ran for. This is the cost of the 
+                            # subprocess calculation
                             process_costs[proc_count] = time()-calc_start
             if finished < len(sub_fnames):          
                 sleep(60)
         
         self.logger.info("Acquisition Function Evaluations Completed")
-        
+        # Calculate the total subprocess cost.
         process_cost = np.sum(process_costs)
-                
+        
+        # extract all the outputs from the subprocesses and collate them
+        # into a single array
         kg_output = []
         for sub_name in sub_fnames:
             cont_loop = True
@@ -620,20 +686,23 @@ class barefoot():
         self.logger.debug("Calculation Results retrieved from Subprocess Jobs")
         return kg_output, process_cost
     
-    def __run_singlenode_acq_func(self, x_test, new_mean):        
+    def __run_singlenode_acq_func(self, x_test, new_mean):     
+        # As before, this function calculates the acquisition function values
+        # for determining the next best points to be queried from the reduced
+        # order models. This function runs the concurrent.futures calculations
+        # directly.
         parameters = []
         parameterFileData = []
         count = 0
         parameterIndex = 0
         parameterFileIndex = 0
         self.logger.debug("Set Up Parameters for Acquisition Function Evaluation")
+        # Save the current reification object to a file for loading
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
+        # Define the parameters for each calculation
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
-                
-                
-                # model_temp = deepcopy(self.reificationObj)
                 model_temp = [np.expand_dims(x_test[kk], axis=0), 
                               np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
                               jj]
@@ -644,7 +713,7 @@ class barefoot():
                                     self.modelParam['costs'], self.maxTM))
                     parameters.append([parameterIndex, parameterFileIndex])
                     parameterIndex += 1
-                    
+                    # save each 1000 parameter sets to a file to reduce the amount of memory used
                     if len(parameterFileData) == 1000:
                         with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                             dump(parameterFileData, f)
@@ -652,29 +721,39 @@ class barefoot():
                         parameterFileIndex += 1
                         parameterIndex = 0
                     count += 1
-                    
+        # save the last of the parameters sets
         if len(parameterFileData) != 0:
             with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                 dump(parameterFileData, f)
-                    
+        # set which acquistion function will be used
         if self.acquisitionFunc == "EI":
             acqFunc = calculate_EI
         elif self.acquisitionFunc == "KG":
             acqFunc = calculate_KG
         elif self.acquisitionFunc == "TS":
             acqFunc = calculate_TS
+        elif self.acquisitionFunc == "Hedge":
+            acqFunc = calculate_GPHedge
+        elif self.acquisitionFunc == "Greedy":
+            acqFunc = calculate_Greedy
         kg_output = []
+        # Start the concurrent calculations and return the output array
         self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(parameters, executor.map(acqFunc,parameters)):
                 params, results = result_from_process
                 kg_output.append(results)
         self.logger.info("Acquisition Function Evaluations Completed")
-        return kg_output, 0
+        return kg_output, 0    
     
     def __run_multinode_fused(self, tm_test):
-        # initialize the parameters for the fused model calculations and
-        # start the calculation
+        # As with the reduced order model calculations, this function evaluates
+        # the selected acquisition function to determine the next best points to 
+        # evaluate from the Truth model
+        
+        # Since this set of calculations uses only the hyperparameter count,
+        # a new calculation is needed to determine how many calculations to
+        # do on each subprocess
         calc_limit = (-(-self.hpCount//self.multinode)) 
         self.logger.debug("Define Parameters for Max Value Evaluations")
         parameters = []
@@ -684,6 +763,7 @@ class barefoot():
         count = 0
         sub_count = 0
         sub_fnames = []
+        # Save the reification object to a file
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
         for mm in range(self.hpCount):
@@ -693,6 +773,8 @@ class barefoot():
             parameterIndex += 1
             count += 1
             
+            # Save every 500 parameter sets to a separate file to reduce memory
+            # usage
             if len(parameterFileData) == 500:
                 with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                     dump(parameterFileData, f)
@@ -703,18 +785,18 @@ class barefoot():
             if count == calc_limit:
                 fname = "{}".format(sub_count)
                 sub_fnames.append(fname)
-                
+                # Trigger the subprocesses with a new calculation set
                 with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_count), 'wb') as f:
                     control_param = [0, "fused", self.acquisitionFunc]
                     dump(control_param, f)
-
+                # save the parameter indices to a file
                 with open("{}/subprocess/{}.dump".format(self.workingDir, fname), 'wb') as f:
                     dump(parameters, f)
                 
                 parameters = []
                 count = 0
                 sub_count += 1
-                
+        # save the last of the parameter sets to a file
         if len(parameterFileData) != 0:
             with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                 dump(parameterFileData, f)
@@ -722,18 +804,20 @@ class barefoot():
         if parameters != []:
             fname = "{}".format(sub_count)
             sub_fnames.append(fname)
-            
+            # Trigger the final subprocess to start calculations
             with open("{}/subprocess/sub{}.control".format(self.workingDir, sub_count), 'wb') as f:
                 control_param = [0, "fused", self.acquisitionFunc]
                 dump(control_param, f)
-
+            # dump the parameter indices to a file
             with open("{}/subprocess/{}.dump".format(self.workingDir, fname), 'wb') as f:
                 dump(parameters, f)
 
         self.logger.info("Parameters for Max Value Calculations Sent to Subprocess")
+        # wait for calculations to finish
         sleep(60)
 
         finished = 0
+        # check that all calculations have completed before continuing
         while finished < len(sub_fnames):
             finished = 0
             for sub_name in sub_fnames:
@@ -745,6 +829,8 @@ class barefoot():
                 sleep(60)        
         
         fused_output = []
+        # Extract the outputs from the individual subprocess output files and
+        # collate into a single array
         for sub_name in sub_fnames:
             cont_loop = True
             load_failed = True
@@ -770,11 +856,7 @@ class barefoot():
             else:
                 self.logger.debug("sub_output {} NOT found".format(len(sub_name)))
         
-        # with open("{}/subprocess/fused.output".format(self.workingDir), 'rb') as f:
-        #     fused_output = load(f)
-            
-        # os.remove("{}/subprocess/fused.dump".format(self.workingDir))
-        # os.remove("{}/subprocess/fused.output".format(self.workingDir))
+        # change the format of the output array to be a numpy array
         fused_output = np.array(fused_output, dtype=object)
         if fused_output.shape[0] == 0:
             fused_output = np.array([[0,0]])
@@ -783,6 +865,9 @@ class barefoot():
         return fused_output
         
     def __run_singlenode_fused(self, tm_test):
+        # This function achieves the same functionality as the multi-node fused
+        # function above, but does it all on the base node, rather than sending the
+        # data to subprocesses.
         parameters = []
         parameterFileData = []
         # initialize the parameters for the fused model calculations and
@@ -790,6 +875,7 @@ class barefoot():
         self.logger.debug("Define Parameters for Max Value Evaluations")
         parameterIndex = 0
         parameterFileIndex = 0
+        # save the reification object to a separate file
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
         for mm in range(self.hpCount):
@@ -797,26 +883,45 @@ class barefoot():
                             self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
             parameters.append([parameterIndex, parameterFileIndex])
             parameterIndex += 1
+            # Save each set of 500 parameters to a separate file
             if len(parameterFileData) == 500:
                 with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                     dump(parameterFileData, f)
                 parameterFileData = []
                 parameterFileIndex += 1
                 parameterIndex = 0
-            
+        # Save the last of the parameter sets to a file
         if len(parameterFileData) != 0:
             with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
                 dump(parameterFileData, f)
-
-        fused_output = []
+        
+        # Set up a list of outputs for each of the results from the acquisition
+        # functions if using the GP Hedge approach
+        if self.tmSampleOpt == "Hedge":
+            fused_out = [[],[],[],[]]
+        else:
+            # Create just a single list for when using other Acquisition Functions
+            fused_output = []
         self.logger.info("Start Max Value Calculations | {} Sets".format(len(parameters)))
         count = 0
-        with concurrent.futures.ProcessPoolExecutor(2) as executor:#cpu_count()) as executor:
+        # Run the concurrent processes and save the outputs
+        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(parameters, executor.map(fused_calculate,parameters)):
                 params, results = result_from_process
-                fused_output.append(results[0])
+                if self.tmSampleOpt == "Hedge":
+                    fused_out[0].append(results[0][0])
+                    fused_out[1].append(results[0][1])
+                    fused_out[2].append(results[0][2])
+                    fused_out[3].append(results[0][3])
+                else:
+                    fused_output.append(results[0])
                 count += 1
-                
+        # When using the GP Hedge approach the list of outputs are returned
+        # as-is
+        if self.tmSampleOpt == "Hedge":
+            return fused_out
+        # when using other acquisition functions process the output to attempt
+        # the removal of all duplicates and then return the processed output
         max_values = np.zeros((results[1],2))
                     
         for ii in range(len(fused_output)):
@@ -837,12 +942,15 @@ class barefoot():
         return fused_output
 
     def __call_ROM(self, medoid_out):
+        # This function serves to evaluate the Reduced Order Models at the 
+        # determined points. This is done in parallel to reduce the time taken
         params = []
         count = np.zeros((len(self.ROM)+1)) 
         current = np.array(self.iterationData.iloc[:,3:])[-1,:]
         count[0:len(self.ROM)] = current[1:]
         count[-1] = current[0]
         param_index = 0
+        # Define the parameter sets needed for each calculation
         self.logger.debug("Define Parameters for ROM Function Evaluations")
         for iii in range(medoid_out.shape[0]):
             x_index = 6 + self.nDim
@@ -856,43 +964,245 @@ class barefoot():
         temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params)) 
         costs = np.zeros(len(params))
+        # Run the concurrent calculations and extract the results
         self.logger.info("Start ROM Function Evaluations | {} Calculations".format(len(params)))
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
-                self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
                 temp_x[par["ParamIndex"],:] = par["Input Values"]
                 temp_y[par["ParamIndex"]] = results
                 temp_index[par["ParamIndex"]] = par["Model Index"]
+                if not self.maximize:
+                    results = (-1)*results
+                self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
                 count[par["Model Index"]] += 1
         return temp_x, temp_y, temp_index, costs, count
     
     def __call_Truth(self, params, count):
+        # This function evaluates the truth model at the points defined by the 
+        # framework. The parameters for the calculation are defined elsewhere
+        # and this framework just runs the evaluations
         temp_x = np.zeros((len(params), self.nDim))
         temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params)) 
         costs = np.zeros(len(params))
+        # Run the concurrent calculations and extract the results
         self.logger.info("Start Truth Model Evaluations | {} Sets".format(len(params)))
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
+                # if the truth function fails to evaluate, it should return false
+                # and therefore the results are not included in the output
                 if results != False:
-                    self.reificationObj.update_truth(par["Input Values"], results)
                     temp_x[par["ParamIndex"],:] = par["Input Values"]
                     temp_y[par["ParamIndex"]] = results
                     temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
+                    if not self.maximize:
+                        results = (-1)*results
+                    self.reificationObj.update_truth(par["Input Values"], results)
+        # Remove any calculations that failed from the output and save the 
+        # data
         temp_x = temp_x[np.where(temp_y != 0)]
         temp_y = temp_y[np.where(temp_y != 0)]
         temp_index = temp_index[np.where(temp_y != 0)]
         self.logger.info("Truth Model Evaluations Completed")
+        if self.tmSampleOpt == "Hedge":
+            self.__update_Hedge_Probabilities("TM")
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
         if np.max(temp_y) > self.maxTM:
             self.maxTM = np.max(temp_y)
+        # Return the updated model call counts
         return count
+    
+    def __singleAcqFuncApproach(self, x_test, new_mean, calcPerProcess):
+        # this function is set up to be used in conjunction with the GP Hedge
+        # approach to call the required acquisition function calls
+        if self.multinode > 0:
+            kg_output, process_cost = self.__run_multinode_acq_func(x_test, 
+                                                                  new_mean, 
+                                                                  calcPerProcess)
+        else:
+            kg_output, process_cost = self.__run_singlenode_acq_func(x_test, 
+                                                     new_mean)
+        return kg_output, process_cost
+    
+    def __gpHedgeApproach(self, x_test, new_mean, calcPerProcess):
+        # This function is for using the GP Hedge Portfolio optimization appraoch
+        
+        # Calculate the probabilities for each acquisition function
+        prob = self.gpHedgeProb/np.sum(self.gpHedgeProb)
+        # determine the index of the function with the highest probability
+        index_Max_prob = np.where(prob == np.max(prob))[0][0]
+        self.gpHedgeTrack.append(index_Max_prob)
+        # run the individual acquisition function evaluations
+        output, process_cost = self.__singleAcqFuncApproach(x_test, new_mean, calcPerProcess)
+        # the output will be a list of lists, choose the one corresponding to the 
+        # maximum probability
+        kg_output = output[index_Max_prob]
+        
+        clusters = []
+        # determine the batch of next best points for all acquisition function
+        # outputs for use in calculating the gain later
+        for ii in range(4):
+            cluster_output = np.array(output[ii], dtype=object)
+            # Cluster the acquisition function output
+            medoid_out = self.__kg_calc_clustering(cluster_output)
+            clusters.append(medoid_out)
+        # save the clusters
+        with open("data/hedgeClusters", 'wb') as f:
+            dump(clusters, f)
+        # return the output from the selected function
+        return kg_output, process_cost
+    
+    def __update_Hedge_Probabilities(self, models):
+        # at each iteration when using the GP Hedge approach it is necessary to 
+        # calculate the gain associated with each acquisition function
+        
+        # load the data, which is the clusters from each acquistion function output
+        with open("data/hedgeClusters", 'rb') as f:
+            clusters = load(f)
+        
+        parameters = []
+        parameterFileData = []
+        # initialize the parameters for the fused model calculations and
+        # start the calculation
+        self.logger.debug("Define Parameters for Max Value Evaluations")
+        parameterIndex = 0
+        parameterFileIndex = 0
+        with open("data/reificationObj", 'wb') as f:
+            dump(self.reificationObj, f)
+        
+        x_index = 6 + self.nDim
+        # for each set of results, define the parameters and evaluate all the
+        # fused model GPs
+        for ii in range(4):
+            for mm in range(self.hpCount):
+                if models == "ROM":
+                    parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
+                                self.covFunc, clusters[ii][:,x_index:], self.maxTM, 0.01, ii))
+                elif models == "TM":
+                    parameterFileData.append((1, [], self.xFused, self.fusedModelHP[mm,:],
+                                self.covFunc, clusters[ii], self.maxTM, 0.01, ii))
+                parameters.append([parameterIndex, parameterFileIndex])
+                parameterIndex += 1
+                # save each set of 500 parameters in a file
+                if len(parameterFileData) == 500:
+                    with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                        dump(parameterFileData, f)
+                    parameterFileData = []
+                    parameterFileIndex += 1
+                    parameterIndex = 0
+            # save the last set of parameters in a file
+            if len(parameterFileData) != 0:
+                with open("data/parameterSets/parameterSet{}".format(parameterFileIndex), 'wb') as f:
+                    dump(parameterFileData, f)
+        # run all the calculations concurrently and obtain the outputs
+        fused_output = [[],[],[],[]]
+        count = 0
+        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+            for result_from_process in zip(parameters, executor.map(evaluateFusedModel,parameters)):
+                params, results = result_from_process
+                fused_output[results[0]].append(results[1])
+                count += 1
+        
+        # update the gain for each acquisition function for either the ROM or TM
+        if models == "ROM":
+            for ii in range(4):
+                # # Mean of output
+                # mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
+                # self.gpHedgeHist[ii].append(np.max(mean_output))
+                # Max of output
+                mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
+                self.gpHedgeHist[ii].append(np.max(mean_output))
+                # # Sum of output
+                # mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
+                # self.gpHedgeHist[ii].append(np.max(mean_output))
+                
+                if len(self.gpHedgeHist[ii]) > 2*self.tmIterLim:
+                    self.gpHedgeHist[ii] = self.gpHedgeHist[ii][1:]
+            self.gpHedgeProb = np.sum(self.gpHedgeHist, axis=1)
+        elif models == "TM":
+            for ii in range(4):
+                # # Mean of output
+                # mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
+                # self.gpHedgeHistTM[ii].append(np.max(mean_output))
+                # Max of output
+                mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
+                self.gpHedgeHistTM[ii].append(np.max(mean_output))
+                # # Sum of output
+                # mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
+                # self.gpHedgeHistTM[ii].append(np.max(mean_output))
+                if len(self.gpHedgeHistTM[ii]) > 2*self.tmIterLim:
+                    self.gpHedgeHistTM[ii] = self.gpHedgeHistTM[ii][1:]
+            self.gpHedgeProbTM = np.sum(self.gpHedgeHistTM, axis=1)
+    
+    def __singleAcqFused(self, tm_test):
+        # For the GP Hedge appraoch for the Truth Model, this functions
+        # calls the individual calculations in either single- or multi-node configuration
+        if self.multinode > 0:
+            fused_output = self.__run_multinode_fused(tm_test)
+        else:
+            fused_output = self.__run_singlenode_fused(tm_test)
+        return fused_output
+    
+    def __hedgeFused(self, tm_test):
+        # This function controls the use of the GP Hedge appraoch in the calculation        
+        # of the next best points for the Truth model
+        
+        # calculate the most recent probabilities and determine which acquisition
+        # function has the maximum probability
+        prob = self.gpHedgeProbTM/np.sum(self.gpHedgeProbTM)
+        index_Max_prob = np.where(prob == np.max(prob))[0][0]
+        self.gpHedgeTrackTM.append(index_Max_prob)
+        
+        # obtain the outputs from the acquisition functions
+        output = self.__singleAcqFused(tm_test)
+        
+        fused_output = output[index_Max_prob]
+        
+        max_values = np.zeros((tm_test.shape[0],2))
+        # process the selected output to remove duplicates
+        for ii in range(len(fused_output)):
+            if max_values[fused_output[ii][1],0] != 0:
+                if max_values[fused_output[ii][1],0] < fused_output[ii][0]:
+                    max_values[fused_output[ii][1],0] = fused_output[ii][0]
+                    max_values[fused_output[ii][1],1] = fused_output[ii][1]
+            else:
+                max_values[fused_output[ii][1],0] = fused_output[ii][0]
+                max_values[fused_output[ii][1],1] = fused_output[ii][1]
+                    
+        fused_output = max_values[np.where(max_values[:,0]!=0)]
+        
+        if fused_output.shape[0] == 0:
+            fused_output = np.array([[0,0]])
+        
+        self.logger.info("Max Value Calculations Completed")
+
+        clust = []
+        # cluster all the outputs, for the calculation of the gain at the
+        # end of the iteration
+        for ii in range(4):
+            cluster_output = np.array(output[ii], dtype=object)
+            # Cluster the acquisition function output
+            try:
+                if cluster_output.shape[0] > self.batchSize:
+                    medoids, clusters = k_medoids(cluster_output, self.batchSize)
+                else:
+                    medoids = []
+                    for iii in range(cluster_output.shape[0]):
+                        medoids.append(iii)
+            except:
+                medoids, clusters = k_medoids(cluster_output, 1)
+            clust.append(np.array(tm_test[medoids,:], dtype=np.float))
+        # save the clusters for use later
+        with open("data/hedgeClusters", 'wb') as f:
+            dump(clust, f)
+        
+        return fused_output
     
     def __close_subs_on_error(func):
         """
@@ -900,19 +1210,28 @@ class barefoot():
         still close all subprocesses to avoid excessive computing hour costs
         """
         def close_subs(self):
+            no_error = False
             try:
                 func(self)
+                no_error = True
             except Exception as err:
                 self.logger.critical("Optimization Code Failed - See Error Below")
                 self.logger.exception(err)
+                
             if self.multinode > 0:
                 for fname in range(self.multinode):
                     with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
                         f.write("Close Subprocess {}".format(fname))
+            return no_error
         return close_subs
         
     @__close_subs_on_error
     def run_optimization(self):
+        """
+        This is the main optimization control function which handles all the calculations
+        of the BAREFOOT Framework
+        """
+        
         self.logger.info("Start BAREFOOT Framework Calculation")
         # Check if the calculation requires multiple nodes and start them if necessary
         if self.multinode > 0:
@@ -928,18 +1247,19 @@ class barefoot():
                 self.logger.info("#                Start Iteration : {}                 #".format("0"*(4-len(text_num))+text_num))
                 self.logger.info("#########################################################")
                 self.timeCheck = time()
-                # for multinode calculations, check if subprocesses are being kept
-                # running and restart if not
-                if self.keepSubRunning:
-                    pass
-                else:
-                    self.__restart_subs()
+                
                 # Check constraints and obtain latin-hypercube sampled test points
+                evalP = []
+                for pp in range(len(self.ROM)):
+                    evalP.append(np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==pp,self.inputLabels]))
+                
                 x_test, check = apply_constraints(self.sampleCount, 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
                                               self.lb, self.ub, self.constr_func,
-                                              self.sampleScheme)
+                                              self.sampleScheme,evalP)
+                
+                
                 # If constraints can't be satisfied, notify the user in the log
                 if check:
                     self.logger.debug("ROM - All constraints applied successfully {}/{}".format(x_test.shape[0], self.sampleCount))
@@ -955,13 +1275,10 @@ class barefoot():
                 # Calculate the Acquisition Function for each of the test points in each
                 # model for each set of hyperparameters
                 
-                if self.multinode > 0:
-                    kg_output, process_cost = self.__run_multinode_acq_func(x_test, 
-                                                                          new_mean, 
-                                                                          calcPerProcess)
+                if self.acquisitionFunc == "Hedge":
+                    kg_output, process_cost = self.__gpHedgeApproach(x_test, new_mean, calcPerProcess)
                 else:
-                    kg_output, process_cost = self.__run_singlenode_acq_func(x_test, 
-                                                             new_mean)
+                    kg_output, process_cost = self.__singleAcqFuncApproach(x_test, new_mean, calcPerProcess)
                 
                 kg_output = np.array(kg_output, dtype=object)
                 
@@ -973,40 +1290,47 @@ class barefoot():
                 
                 # Call the reduced order models
                 temp_x, temp_y, temp_index, costs, count = self.__call_ROM(medoid_out)
-                
                 self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+                
+                if self.acquisitionFunc == "Hedge":
+                    self.__update_Hedge_Probabilities("ROM")
+
                 self.totalBudgetLeft -= np.sum(costs) + model_cost
                 self.tmBudgetLeft -= np.sum(costs) + model_cost
                 self.logger.info("ROM Function Evaluations Completed")
                 
                 if (self.tmBudgetLeft < 0) or (self.tmIterCount == self.tmIterLim):
                     self.logger.info("Start Truth Model Evaluations")
-
+                    
+                    evalP = [np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==-1,self.inputLabels])]
+                    
                     # create a test set that is dependent on the number of dimensions            
-                    tm_test, check = apply_constraints(int(75000/(self.nDim*self.nDim)), 
+                    tm_test, check = apply_constraints(int(40000/(self.nDim*self.nDim)), 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
-                                              self.lb, self.ub, self.constr_func, False)
+                                              self.lb, self.ub, self.constr_func, False, evalP)
                     if check:
                         self.logger.debug("Truth Model Query - All constraints applied successfully")
                     else:
                         self.logger.critical("Truth Model Query - Some or All Constraints Could Not Be Applied! Continuing Without Constraints")
                     
-                    if self.multinode > 0:
-                        fused_output = self.__run_multinode_fused(tm_test)
+                    # Evaluate the acquistion function to determine the next best
+                    # points to evaluate
+                    if self.tmSampleOpt == "Hedge":
+                        fused_output = self.__hedgeFused(tm_test)
                     else:
-                        fused_output = self.__run_singlenode_fused(tm_test)
+                        fused_output = self.__singleAcqFused(tm_test)
                         
                     fused_output = np.array(fused_output, dtype=object)
+                    # Cluster the output to obtain the correct batch size
                     if fused_output.shape[0] > self.batchSize:
                         medoids, clusters = k_medoids(fused_output, self.batchSize)
-                    elif (self.nDim > 1) and (self.nDim < self.batchSize) and fused_output.shape[0] > self.nDim:
-                        medoids, clusters = k_medoids(fused_output, self.nDim)
                     else:
                         medoids = []
                         for iii in range(fused_output.shape[0]):
                             medoids.append(iii)
-                            
+                               
+                    # define the parameters for the Truth Model Evaluations
                     params = []
                     param_index = 0
                     self.logger.debug("Define Parameters for Truth Model Evaluations")
@@ -1020,17 +1344,32 @@ class barefoot():
                     self.tmIterCount = 0
                     self.tmBudgetLeft = self.tmBudget
                     
-                    if self.externalTM or not self.keepSubRunning:
+                    # If and external Truth Model is used, submit the data for
+                    # saving to output
+                    if self.externalTM:
                         self.__external_TM_data_save(params, count)
-                        # if self.multinode > 0:
-                        #     for fname in range(self.multinode):
-                        #         with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
-                        #             f.write("Close Subprocess {}".format(fname))
-                        #     start_process = False
                         break
                     else:
+                        # If the subprocesses need to be closed, close them
+                        if not self.keepSubRunning:
+                            for fname in range(self.multinode):
+                                with open("{}/subprocess/close{}".format(self.workingDir, fname), 'w') as f:
+                                    f.write("Close Subprocess {}".format(fname))
+                                    self.logger.warning("Close Subprocess {}".format(fname))
+                        # otherwise, query the Truth Model directly
                         count = self.__call_Truth(params, count)
                     
+                    # for multinode calculations, check if subprocesses are being kept
+                    # running and restart if not
+                    if self.keepSubRunning:
+                        pass
+                    else:
+                        if (self.totalBudgetLeft < 0) or (self.currentIteration >= self.iterLimit):
+                            pass
+                        else:
+                            self.__restart_subs()
+                
+                # save the required outputs
                 self.__add_to_iterationData(time()-self.timeCheck + model_cost, count)
                 self.timeCheck = time()
                 
@@ -1055,10 +1394,17 @@ class barefoot():
     
         
     def __kg_calc_clustering(self, kg_output):
+        # This function clusters the output from the Reduced Order Model stage 
+        # acquistion function evaluations There is some processing required to 
+        # obtain the correct format.
+        
         # convert to a numpy array for ease of indexing
-        kg_output = np.array(kg_output, dtype=object)
+        # kg_output = np.array(kg_output, dtype=object)
         point_selection = {}
         self.logger.debug("Extract Points for Clustering from Acquisition Function Evaluations")
+        # process the output to obtain the correct format for the clustering
+        # (model index, acquisition function value, input index)
+        
         for iii in range(kg_output.shape[0]):
             try:
                 if kg_output[iii,3] in point_selection[kg_output[iii,2]]['models']:
@@ -1109,6 +1455,8 @@ class barefoot():
         return medoid_out       
     
     def __start_subprocesses__(self, subprocess_count):
+        # The subprocesses require a separate directory in the main BAREFOOT
+        # directory, so these need to be created if they don't exist
         try:
             os.mkdir('{}/subprocess'.format(self.workingDir))
             self.logger.debug("Subprocess Directory Created")
@@ -1121,12 +1469,15 @@ class barefoot():
         except FileExistsError:
             self.logger.debug("LSFOut Directory Already Exists")
             pass
-        # This string is used to create the job files for the subprocesses used when calculating the knowledge gradient
+        # These strings are used to create the job files for the subprocesses used 
+        # when running the calculations in multi-node configuration
         with open("{}/data/processStrings".format(self.workingDir), 'rb') as f:
             processStrings = load(f)
         
         self.logger.info("Strings for Subprocess Shell Files Loaded")
         
+        # extract the two process strings and calculate how many calculations
+        # will be done per subprocess
         subProcessStr = processStrings[0]
         runProcessStr = processStrings[1]
         calculation_count = self.sampleCount*self.hpCount*(len(self.ROM))
@@ -1164,7 +1515,8 @@ class barefoot():
                 self.logger.info("All Subprocess Jobs Started Successfully")
             # waiting for 2 hours for all the subprocesses to start will stop the waiting
             # and return false from this function to say that all the processes weren't
-            # started yet
+            # started yet. This is to save on computational hours if there is a problem
+            # but this functionality can be disabled if desired.
             if count == 240:
                 all_pending = False
                 self.logger.critical("Subprocess Jobs Outstanding after 2 Hours | {}/{} Jobs Started".format(total_started, subprocess_count))
@@ -1172,6 +1524,11 @@ class barefoot():
         return calcPerProcess, all_started
 
     def __update_reduced_order_models__(self):
+        # If the reduced order models are configured to be retrained after more
+        # truth model evaluations have been conducted, this function re-evaluates
+        # all the evaluated points and reconstructs the reification object with
+        # the new values.
+        
         self.logger.info("Recalculate all evaluated points for ROM to ensure correct model results are used")
         self.ROMInitInput = []
         self.ROMInitOutput = []
@@ -1180,6 +1537,7 @@ class barefoot():
         params = []
         count = []
         param_index = 0
+        # obtain the parameters for the evaluations
         for ii in range(len(self.ROM)):
             count.append(0)
             for jj in range(self.initDataPathorNum[ii]):
@@ -1194,7 +1552,8 @@ class barefoot():
         temp_x = np.zeros((len(params), self.nDim))
         temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params))
-                    
+        
+        # Run the evaluations concurrently and store the outputs                    
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
@@ -1205,6 +1564,7 @@ class barefoot():
                     temp_y[par["ParamIndex"]] = results
                     temp_index[par["ParamIndex"]] = par["Model Index"]
         self.logger.info("Create New Reification Object")
+        # Recreate the reification object for further calculations
         self.reificationObj = model_reification(self.ROMInitInput, self.ROMInitOutput, 
                                           self.modelParam['model_l'], 
                                           self.modelParam['model_sf'], 
@@ -1216,7 +1576,7 @@ class barefoot():
                                           self.modelParam['err_sn'], 
                                           TMDataX, TMDataY, 
                                           len(self.ROM), self.nDim, self.covFunc)
-        
+        # save the new data
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.__add_to_iterationData(time()-self.timeCheck, np.array(count))
         self.timeCheck = time()
@@ -1224,6 +1584,8 @@ class barefoot():
         pass
     
     def __external_TM_data_save(self, TMEvaluationPoints, count):
+        # When using an external Truth Model, it is necessary to save the next
+        # best points for use in the external calculations or experiments
         outputData = np.zeros((len(TMEvaluationPoints), self.nDim+1))
         for ii in range(len(TMEvaluationPoints)):
             outputData[ii,0:self.nDim] = TMEvaluationPoints[ii]["Input Values"]
@@ -1237,8 +1599,10 @@ class barefoot():
         self.__save_calculation_state()
         self.logger.critical("Truth Model Evaluation Points Copied to File | Restart Process when results are ready")
     
-    def __external_TM_data_load(self):
-        self.__load_from_save()
+    def __external_TM_data_load(self, workingDir, calculationName):
+        # When restarting the framework after using an external Truth Model
+        # the data from the model must be loaded into the framework
+        self.__load_from_save(workingDir, calculationName)
         with open('{}/results/{}/countData'.format(self.workingDir, self.calculationName), 'rb') as f:
             count = load(f)
         TMData = pd.read_csv('{}/results/{}/TruthModelEvaluationPoints.csv'.format(self.workingDir, 
@@ -1254,9 +1618,13 @@ class barefoot():
             temp_y[ii] = TMData[ii,self.nDim+1]
             temp_index[ii] = -1
             count[-1] += 1
-        
+        # After loading the data, the reification object is updated and the new
+        # data saved to the normal framework outputs
         self.logger.info("Truth Model Evaluations Loaded")
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+        if not self.maximize:
+            temp_y = (-1)*temp_y
+        self.reificationObj.update_truth(temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
         
         if np.max(temp_y) > self.maxTM:
@@ -1273,5 +1641,6 @@ class barefoot():
         self.logger.info("Iteration {} Completed Successfully".format(self.currentIteration))
         self.currentIteration += 1
         self.tmIterCount += 1
+        self.logger.info("Finished Loading External TM Data")
         
         
