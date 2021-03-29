@@ -1,5 +1,7 @@
 # Batch Reification/Fusion Optimization (BAREFOOT) Framework
 
+![Image of BAREFOOT](https://github.com/RichardCouperthwaite/BAREFOOT-Framework/blob/master/BAREFOOT.png)
+
 The BAREFOOT Framework class structure allows for two different calculation setups:
 
 ### Single-Node
