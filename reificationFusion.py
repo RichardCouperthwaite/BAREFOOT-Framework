@@ -13,6 +13,7 @@ def reification(y,sig):
     # This function takes lists of means and variances from multiple models and 
     # calculates the fused mean and variance following the Reification/Fusion approach
     # developed by D. Allaire. This function can handle any number of models.
+    y = np.array(y)
     yM = np.transpose(np.tile(y, (len(y),1,1)), (2,0,1))
     sigM = np.transpose(np.tile(sig, (len(y),1,1)), (2,0,1))
     
