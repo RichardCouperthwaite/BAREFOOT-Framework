@@ -50,7 +50,7 @@ The second stage sets up the specific calculation required:
 * lowBound : The lower bound of the hypeparameter values.
 * fusedPoints : The number of points per dimension to use when constructing the Fused GP. Points for evaluating the Fused GP are sampled linearly for each dimension, creating a grid of points to evaluate the fused mean and variance.
 
-The code below is included in the "barefoot.py" file as a test, and provides the minimum input required for running the BAREFOOT Framework.
+The code below provides the minimum input required for running the BAREFOOT Framework.
 
 ```
 import matplotlib.pyplot as plt
