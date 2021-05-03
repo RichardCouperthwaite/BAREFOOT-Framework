@@ -26,7 +26,7 @@ The framework is initialized in a two stage process. The first sets up the frame
 * restore_calc : This parameter toggles whether the framework data is set up from the information provided or retrieved from a save_state file. This can be used to restart a calculation
 * updateROMafterTM : This parameter allows the reduced order models to be retrained after getting more data from the Truth Model. The model function calls do not change, so the training needs to reflect in the same function.
 * externalTM : In cases where it is necessary to evaluate the Truth Model separate to the framework (for example, if the Truth Model is an actual experiment), this toggles the output of the predicted points to a separate file for use externally. The framework is shut down after the data is output, see test examples for how to restart the framework after the external Truth Model has been evaluated
-* acquisitionFunc : The acquisition function to use to evaluate the next best points for the reduced order models. Currently the options are "KG" for Knowledge Gradient and "EI" for expected improvement.
+* acquisitionFunc : The acquisition function to use to evaluate the next best points for the reduced order models. Currently the options are "KG" for Knowledge Gradient, "EI" for expected improvement, "UCB" for Upper Confidence Bound, "PI" for Probability of Improvment, "Hedge" for the GPHedge Portfolio Optimization approach, and "Greedy" for a greedy optimization approach.
 * A, b, Aeq, beq: Equality and inequality constraints according to the following equations:
   * A*x <= b
   * Aeq*x == b
@@ -34,6 +34,13 @@ The framework is initialized in a two stage process. The first sets up the frame
 * func : function constraints, must take the input matrix (x) and output a vector of length equal to the number of samples in the input matrix (x) with boolean values.
 * keepSubRunning : Determines whether the subprocesses are left running while calling the Truth Model
 * verbose : Determines the logging level for tracking the calculations.
+* sampleScheme : This determines the approach used when sampling the design space. Three options are available Latin Hypercube sampling ("LHS"), grid sampling ("Grid") or custom ("Custom"). The custom sampling approach requries a Pandas created csv file with possible points to query to be included in the data subdirectory of the BAREFOOT Framework.
+* tmSampleOpt : This sets the acquisition function to use when determining the points to evaluate from the Truth Model. The possible values are the same as for the acquisitionFunc parameter.
+* logname : This changes the name of the log file that will hold the progress output.
+* maximize : This parameter toggles maximization and minimization. The framework will always operate as a maximization, however, by setting this parameter to False, the output from all the models will be multiplied by -1 to ensure that the framework actually minimizes the function.
+* train_func : When training the reduced order models after the Truth Model queries, it is necessary to include this function that will actually do the training.
+* reification : Boolean parameter that toggles whether the framework will use the reification approach or not. Defaults to True.
+* batch : Boolean parameter that toggles the batch approach in the framework. Defaults to True.
 
 The second stage sets up the specific calculation required:
 
@@ -49,6 +56,7 @@ The second stage sets up the specific calculation required:
 * upperBound : The upper bound of the hyperparameters (usually setting to 1 is sufficient since inputs are on a unit hypercube).
 * lowBound : The lower bound of the hypeparameter values.
 * fusedPoints : The number of points per dimension to use when constructing the Fused GP. Points for evaluating the Fused GP are sampled linearly for each dimension, creating a grid of points to evaluate the fused mean and variance.
+* fusedHP : When using the calculations with only the reification approach, and not the batch approach, it is necessary to provide hyperparmeters to use with the fused model GP. This parameter is a list of these parameters with the following format: [signal variance, length scale 1, ..., length scale n].
 
 The code below provides the minimum input required for running the BAREFOOT Framework.
 
