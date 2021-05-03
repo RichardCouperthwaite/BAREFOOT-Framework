@@ -137,16 +137,17 @@ class model_reification():
             err_mean = err_mean * self.err_std[i] + self.err_mean[i]
             model_var.append((err_mean)**2 + m_var)
         fused_mean, fused_var = reification(model_mean, model_var)
-        self.fused_y_mean = np.mean(fused_mean[0:400:12])
-        self.fused_y_std = np.std(fused_mean[0:400:12])
+        self.fused_y_mean = np.mean(fused_mean)
+        self.fused_y_std = np.std(fused_mean)
         if self.fused_y_std == 0:
             self.fused_y_std = 1
         fused_mean = (fused_mean - self.fused_y_mean)/self.fused_y_std
-        self.fused_GP = gp_model(x_test[0:400:12], 
-                                 fused_mean[0:400:12], 
+        fused_var = fused_var/(self.fused_y_std**2)
+        self.fused_GP = gp_model(x_test, 
+                                 fused_mean, 
                                  l_param, 
                                  sigma_f, 
-                                 abs(fused_var[0:400:12])**(0.5), 
+                                 abs(fused_var)**(0.5), 
                                  self.num_dim, 
                                  kernel)
         return self.fused_GP

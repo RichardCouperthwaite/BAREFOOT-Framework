@@ -2,10 +2,9 @@
 """
 Created on Thu Nov 12 12:01:34 2020
 
-I currently cannot find the source of this code to attribute it correctly. As
-such I will note explicitly that this code was not produced by myself, but if
-anyone reading this who does know the source of this code, please notify me
-so that it can be correcly attributed.
+This code is taken from the following Github Repository
+
+https://github.com/SachinKalsi/kmedoids
 
 """
 
