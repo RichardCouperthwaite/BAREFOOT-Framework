@@ -58,70 +58,16 @@ The second stage sets up the specific calculation required:
 * fusedPoints : The number of points per dimension to use when constructing the Fused GP. Points for evaluating the Fused GP are sampled linearly for each dimension, creating a grid of points to evaluate the fused mean and variance.
 * fusedHP : When using the calculations with only the reification approach, and not the batch approach, it is necessary to provide hyperparmeters to use with the fused model GP. This parameter is a list of these parameters with the following format: [signal variance, length scale 1, ..., length scale n].
 
-The code below provides the minimum input required for running the BAREFOOT Framework.
+## Example Code
+The sample_code.py file has sample code that demonstrates many of the features of the framework, and also demonstrates how to construct initial data files, and subprocess batch files. There are three code options that can be run in the sample_code.py file:
 
-```
-import matplotlib.pyplot as plt
-from barefoot import barefoot
-import numpy as np
-
-def rom1(x):
-    x = x*(2)+0.5
-    return -np.sin(9.5*np.pi*x) / (2*x)
-
-def rom2(x):
-    x = x*(2)+0.5
-    return -(x-1)**4
-
-def tm(x):
-    x = x*(2)+0.5
-    # Gramacy & Lee Test Function
-    return -(x-1)**4 - np.sin(10*np.pi*x) / (2*x)
-
-def plot_results(calcName):
-    x = np.linspace(0,1,1000)
-
-    y1 = tm(x)
-    y2 = rom1(x)
-    y3 = rom2(x)
-    
-    plt.figure()
-    plt.plot(x,y1,label="TM")
-    plt.plot(x,y2,label="ROM1")
-    plt.plot(x,y3,label="ROM2")
-    plt.legend()
-
-    with open('./results/{}/iterationData'.format(calcName), 'rb') as f:
-        iterationData = load(f)
-    
-    plt.figure()
-    plt.plot(iterationData.loc[:,"Iteration"], iterationData.loc[:,"Max Found"])
-
-def singeNodeTest():
-    np.random.seed(100)
-    ROMList = [rom1, rom2]
-    test = barefoot(ROMModelList=ROMList, TruthModel=tm, 
-                    calcInitData=True, initDataPathorNum=[1,1,1,1], nDim=1, 
-                    calculationName="SingleNodeTest", acquisitionFunc="EI")
-    modelParam = {'model_l':[[0.1],[0.1]], 
-                'model_sf':[1,1,1], 
-                'model_sn':[0.01,0.01], 
-                'means':[0,0], 
-                'std':[1,1], 
-                'err_l':[[0.1],[0.1]], 
-                'err_sf':[1,1,1], 
-                'err_sn':[0.01,0.01],
-                'costs':[1,2,20]}
-    test.initialize_parameters(modelParam=modelParam, iterLimit=30, 
-                               sampleCount=10, hpCount=50, 
-                               batchSize=2, tmIter=5)
-    test.run_optimization()
-    
-    plot_results("SingleNodeTest")
-
-if __name__ == "__main__":
-    singeNodeTest()
-```
+ 1. runBatch:
+   * Demonstrates the calculation of initial data in the framework, and then uses this for a simple batch calculation
+ 3. runReifi:
+   * Demonstrates how to store initial data for importing into the framework, and then uses this for a simple reification only calculation
+ 5. runBAREFOOT:
+   * Demonstrates how to set up the subprocess batch files for a SLURM batch server. Uses these subprocesses for conducting a full BAREFOOT calculation.
+   
 
 For more information on the methods used in this framework, please see our publications:
 
