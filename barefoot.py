@@ -1552,7 +1552,10 @@ class barefoot():
             
             parameters = []
             paramFileData = []
-            count = [0]
+            count = np.zeros((len(self.ROM)+1)) 
+            current = np.array(self.iterationData.iloc[:,3:])[-1,:]
+            count[0:len(self.ROM)] = current[1:]
+            count[-1] = current[0]
             parameterIndex = 0
             parameterFileIndex = 0
             with open("data/reificationObj", 'wb') as f:
@@ -1570,7 +1573,6 @@ class barefoot():
                     paramFileData = []
                     parameterFileIndex += 1
                     parameterIndex = 0
-                count[0] += 1
             
             print(parameters)
             # dump the last of the parameter datasets
