@@ -13,6 +13,7 @@ def reification(y,sig):
     # This function takes lists of means and variances from multiple models and 
     # calculates the fused mean and variance following the Reification/Fusion approach
     # developed by D. Allaire. This function can handle any number of models.
+    y = np.array(y)
     yM = np.transpose(np.tile(y, (len(y),1,1)), (2,0,1))
     sigM = np.transpose(np.tile(sig, (len(y),1,1)), (2,0,1))
     
@@ -136,16 +137,17 @@ class model_reification():
             err_mean = err_mean * self.err_std[i] + self.err_mean[i]
             model_var.append((err_mean)**2 + m_var)
         fused_mean, fused_var = reification(model_mean, model_var)
-        self.fused_y_mean = np.mean(fused_mean[0:400:12])
-        self.fused_y_std = np.std(fused_mean[0:400:12])
+        self.fused_y_mean = np.mean(fused_mean)
+        self.fused_y_std = np.std(fused_mean)
         if self.fused_y_std == 0:
             self.fused_y_std = 1
         fused_mean = (fused_mean - self.fused_y_mean)/self.fused_y_std
-        self.fused_GP = gp_model(x_test[0:400:12], 
-                                 fused_mean[0:400:12], 
+        fused_var = fused_var/(self.fused_y_std**2)
+        self.fused_GP = gp_model(x_test, 
+                                 fused_mean, 
                                  l_param, 
                                  sigma_f, 
-                                 abs(fused_var[0:400:12])**(0.5), 
+                                 abs(fused_var)**(0.5), 
                                  self.num_dim, 
                                  kernel)
         return self.fused_GP

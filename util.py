@@ -9,7 +9,7 @@ import numpy as np
 from pyDOE import lhs
 from kmedoids import kMedoids
 from scipy.spatial import distance_matrix
-from acquisitionFunc import expected_improvement, knowledge_gradient, thompson_sampling
+from acquisitionFunc import expected_improvement, knowledge_gradient, thompson_sampling, upper_conf_bound, probability_improvement
 import pandas as pd
 from pickle import load
 
@@ -323,7 +323,7 @@ def calculate_TS(param):
         The output from the module contains information on some of the parameters
         used as inputs, as well as the maximum expected improvement value. Included
         in the output are the values for all the inputs that correspond to both 
-        the maximum expected improvement and the maximum of the fused model
+        the maximum Thompson Sampling Result and the maximum of the fused model
 
     """
     with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
@@ -369,6 +369,143 @@ def calculate_TS(param):
     # Return the results
     return output   
 
+
+def calculate_PI(param):
+    """
+    Parameters
+    ----------
+    param : tuple
+        The input is a tuple that contains the data required for calculating the
+        Probability of Improvement of a fused model constructed out of a reification 
+        model object.
+
+    Returns
+    -------
+    results : list
+        The output from the module contains information on some of the parameters
+        used as inputs, as well as the maximum expected improvement value. Included
+        in the output are the values for all the inputs that correspond to both 
+        the maximum Probability of Improvement and the maximum of the fused model
+
+    """
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (finish, model_data, x_fused, fused_model_HP, \
+     kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
+    # Initialize the output  
+    output = [0,0,0,jj,kk,mm]
+    # Create the fused model
+    model_temp.update_GP(*model_data)
+    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    # Use the fused model to obtain the mean and variance at all test points
+    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    fused_var = np.diag(fused_var)
+    # Find the index of the test point that has the maximum of the fused model
+    index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
+    # if there are more than on maxima, use the first index
+    try:
+        index_max = index_max_[0]
+    except IndexError:
+        index_max = index_max_
+    # Add the maximum of the fused model to the output  
+    output[0] = np.max(fused_mean)
+    # Calculate the expected improvement for all test point
+    nu_star, x_star, NU = probability_improvement(curr_max, 0.01, fused_mean, np.sqrt(fused_var))
+    # Add the maximum knowledge gradient and the index of the test point to the
+    # output list
+    output[1] = nu_star/cost[jj]
+    output[2] = x_star
+    # Add the actual input values for the maximum of the fused model
+    if len(x_test.shape) > 1:
+        for ii in range(x_test.shape[1]):
+            output.append(x_test[index_max,ii])
+    else:
+        output.append(x_test[index_max])
+    # Add the input values for the maximum knowledge gradient value
+    for i in range(x_test.shape[1]):
+        output.append(x_test[x_star,i])
+    # Return the results
+    return output   
+
+
+
+def calculate_UCB(param):
+    """
+    Parameters
+    ----------
+    param : tuple
+        The input is a tuple that contains the data required for calculating the
+        Upper Confidence Bound of a fused model constructed out of a reification 
+        model object.
+
+    Returns
+    -------
+    results : list
+        The output from the module contains information on some of the parameters
+        used as inputs, as well as the maximum expected improvement value. Included
+        in the output are the values for all the inputs that correspond to both 
+        the maximum Upper Confidence Bound and the maximum of the fused model
+
+    """
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (iteration, model_data, x_fused, fused_model_HP, \
+     kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
+    # Initialize the output  
+    output = [0,0,0,jj,kk,mm]
+    # Create the fused model
+    model_temp.update_GP(*model_data)
+    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    # Use the fused model to obtain the mean and variance at all test points
+    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    fused_var = np.diag(fused_var)
+    # Find the index of the test point that has the maximum of the fused model
+    index_max_ = np.nonzero(fused_mean == np.max(fused_mean))
+    # if there are more than on maxima, use the first index
+    try:
+        index_max = index_max_[0]
+    except IndexError:
+        index_max = index_max_
+    # Add the maximum of the fused model to the output  
+    output[0] = np.max(fused_mean)
+    # Calculate the expected improvement for all test point
+    
+    beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+    
+    kt = np.sqrt(0.2 * beta)
+    
+    nu_star, x_star, NU = upper_conf_bound(kt, fused_mean, np.sqrt(fused_var))
+    # Add the maximum knowledge gradient and the index of the test point to the
+    # output list
+    output[1] = nu_star/cost[jj]
+    output[2] = x_star
+    # Add the actual input values for the maximum of the fused model
+    if len(x_test.shape) > 1:
+        for ii in range(x_test.shape[1]):
+            output.append(x_test[index_max,ii])
+    else:
+        output.append(x_test[index_max])
+    # Add the input values for the maximum knowledge gradient value
+    for i in range(x_test.shape[1]):
+        output.append(x_test[x_star,i])
+    # Return the results
+    return output   
+
+
+
+
+
+
+
+
 def fused_calculate(param):
     """
     Parameters
@@ -388,7 +525,7 @@ def fused_calculate(param):
         data = load(f)
     with open("data/reificationObj", 'rb') as f:
         model_temp = load(f)
-    (finish, model_data, x_fused, fused_model_HP, \
+    (iteration, model_data, x_fused, fused_model_HP, \
          kernel, x_test, curr_max, xi, sampleOpt) = data[param[0]]
     # Create the fused model
     model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
@@ -412,6 +549,27 @@ def fused_calculate(param):
                                                     xi, 
                                                     fused_mean, 
                                                     fused_var)
+        output = [nu_star, x_star]
+    elif sampleOpt == "PI":
+        """
+        Probability of Improvement approach
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = probability_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output = [nu_star, x_star]
+    elif sampleOpt == "UCB":
+        """
+        Upper Confidence Bound approach
+        """
+        beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+        kt = np.sqrt(0.2 * beta)
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = upper_conf_bound(kt, 
+                                                fused_mean, 
+                                                fused_var)
         output = [nu_star, x_star]
     elif sampleOpt == "KG":
         """
@@ -442,6 +600,17 @@ def fused_calculate(param):
             x = int(np.nonzero(fused_mean == nu)[0])
         except TypeError:
             x = int(np.nonzero(fused_mean == nu)[0][0])
+        output.append([nu, x])
+        nu, x, NU = probability_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output.append([nu, x])
+        beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+        kt = np.sqrt(0.2 * beta)
+        nu, x, NU = upper_conf_bound(kt, 
+                                    fused_mean, 
+                                    fused_var)
         output.append([nu, x])
     else:
         """
@@ -479,10 +648,12 @@ def calculate_GPHedge(param):
         data = load(f)
     with open("data/reificationObj", 'rb') as f:
         model_temp = load(f)
-    (finish, model_data, x_fused, fused_model_HP, \
+    (iteration, model_data, x_fused, fused_model_HP, \
      kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
     # Initialize the output  
     output = [[0,[],[],jj,kk,mm],
+              [0,[],[],jj,kk,mm],
+              [0,[],[],jj,kk,mm],
               [0,[],[],jj,kk,mm],
               [0,[],[],jj,kk,mm],
               [0,[],[],jj,kk,mm]]
@@ -506,6 +677,8 @@ def calculate_GPHedge(param):
     output[1][0] = np.max(fused_mean)
     output[2][0] = np.max(fused_mean)
     output[3][0] = np.max(fused_mean)
+    output[4][0] = np.max(fused_mean)
+    output[5][0] = np.max(fused_mean)
 
     nu_star = []
     x_star = []
@@ -556,6 +729,30 @@ def calculate_GPHedge(param):
     output[3][1] = nu_star/cost[jj]
     output[3][2] = x_star
     
+    """
+    Probability of Improvement Approach
+    """
+    # Find the maximum of the fused model
+    nu_star, x_star, NU = probability_improvement(curr_max, 
+                                        0.01, 
+                                        fused_mean, 
+                                        fused_var)
+    output[4][1] = nu_star/cost[jj]
+    output[4][2] = x_star
+    
+    """
+    Upper Confidence Bound Approach
+    """
+    beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+    
+    kt = np.sqrt(0.2 * beta)
+    # Find the maximum of the fused model
+    nu_star, x_star, NU = upper_conf_bound(kt, 
+                                        fused_mean, 
+                                        fused_var)
+    output[5][1] = nu_star/cost[jj]
+    output[5][2] = x_star
+    
     
     
     # Add the actual input values for the maximum of the fused model
@@ -565,17 +762,23 @@ def calculate_GPHedge(param):
             output[1].append(x_test[index_max,ii])
             output[2].append(x_test[index_max,ii])
             output[3].append(x_test[index_max,ii])
+            output[4].append(x_test[index_max,ii])
+            output[5].append(x_test[index_max,ii])
     else:
         output[0].append(x_test[index_max])
         output[1].append(x_test[index_max])
         output[2].append(x_test[index_max])
         output[3].append(x_test[index_max])
+        output[4].append(x_test[index_max])
+        output[5].append(x_test[index_max])
         
     for i in range(x_test.shape[1]):
         output[0].append(x_test[output[0][2],i])
         output[1].append(x_test[output[1][2],i])
         output[2].append(x_test[output[2][2],i])
         output[3].append(x_test[output[3][2],i])
+        output[4].append(x_test[output[4][2],i])
+        output[5].append(x_test[output[5][2],i])
         
     return output
 
@@ -652,11 +855,134 @@ def evaluateFusedModel(param):
         data = load(f)
     with open("data/reificationObj", 'rb') as f:
         model_temp = load(f)
-    (finish, model_data, x_fused, fused_model_HP, \
+    (finish, reification, x_fused, fused_model_HP, \
          kernel, x_test, curr_max, xi, acqIndex) = data[param[0]]
-    # Create the fused model
-    model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
-                                fused_model_HP[0], 0.1, 
-                                kernel)
-    fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    if reification:
+        # Create the fused model
+        model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
+                                    fused_model_HP[0], 0.1, 
+                                    kernel)
+        fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    else:
+        model_temp.l_param = fused_model_HP[1:]
+        model_temp.sigma_f = fused_model_HP[0]
+        model_temp.kk = model_temp.create_kernel()
+        model_temp.gp = model_temp.create_gp()
+        fused_mean, fused_var = model_temp.predict_cov(x_test)
     return [acqIndex, fused_mean]
+
+def batchAcquisitionFunc(param):
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+        
+    with open("data/reificationObj", 'rb') as f:
+        modelGP = load(f)
+
+    xi = 0.01
+    iteration, x_test, fusedModelHP, curr_max, acqFunc = data[param[0]]
+    
+    modelGP.l_param = fusedModelHP[1:]
+    modelGP.sigma_f = fusedModelHP[0]
+    modelGP.kk = modelGP.create_kernel()
+    modelGP.gp = modelGP.create_gp()
+    fused_mean, fused_var = modelGP.predict_cov(x_test)
+    
+    
+    if acqFunc == "TS":
+        """
+        Thompson sampling approach
+        This approach uses the uncertainty, but is quite significantly slower
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+        output = [nu_star, x_star]
+    elif acqFunc == "EI":
+        """
+        Expected Improvement approach
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = expected_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output = [nu_star, x_star]
+    elif acqFunc == "PI":
+        """
+        Probability of Improvement approach
+        """
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = probability_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output = [nu_star, x_star]
+    elif acqFunc == "UCB":
+        """
+        Upper Confidence Bound approach
+        """
+        beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+        kt = np.sqrt(0.2 * beta)
+        fused_var = np.diag(fused_var)
+        nu_star, x_star, NU = upper_conf_bound(kt, 
+                                                fused_mean, 
+                                                fused_var)
+        output = [nu_star, x_star]
+    elif acqFunc == "KG":
+        """
+        Knowledge Gradient approach
+        """
+        nu_star, x_star, NU = knowledge_gradient(x_test.shape[0], 
+                                                  0.1, 
+                                                  fused_mean, 
+                                                  fused_var)
+        output = [nu_star, x_star]
+    elif acqFunc == "Hedge":
+        output = []
+        nu, x, NU = knowledge_gradient(x_test.shape[0], 
+                                                  0.1, 
+                                                  fused_mean, 
+                                                  fused_var)
+        output.append([nu, x])
+        fused_var = np.diag(fused_var)
+        nu, x, NU = thompson_sampling(fused_mean, np.sqrt(fused_var))
+        output.append([nu, x])
+        nu, x, NU = expected_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output.append([nu, x])
+        nu = np.max(fused_mean)
+        try:
+            x = int(np.nonzero(fused_mean == nu)[0])
+        except TypeError:
+            x = int(np.nonzero(fused_mean == nu)[0][0])
+        output.append([nu, x])
+        nu, x, NU = probability_improvement(curr_max, 
+                                                    xi, 
+                                                    fused_mean, 
+                                                    fused_var)
+        output.append([nu, x])
+        beta = np.abs((2*np.log(x_test.shape[1]*(iteration**2)*(np.pi**2)/(6/0.1)))/5)
+        kt = np.sqrt(0.2 * beta)
+        nu, x, NU = upper_conf_bound(kt, 
+                                    fused_mean, 
+                                    fused_var)
+        output.append([nu, x])
+    else:
+        """
+        Greedy Sampling Approach
+        """
+        # Find the maximum of the fused model
+        nu_star = np.max(fused_mean)
+        try:
+            x_star = int(np.nonzero(fused_mean == nu_star)[0])
+        except TypeError:
+            x_star = int(np.nonzero(fused_mean == nu_star)[0][0])
+        output = [nu_star, x_star]
+        
+    # return the maximum value and the index of the test point that corresponds
+    # with the maximum value
+    
+    print(output)
+    
+    return output

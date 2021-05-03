@@ -11,7 +11,7 @@ import numpy as np
 from sys import argv
 from time import sleep, time
 from multiprocessing import cpu_count
-from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_GPHedge
+from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_GPHedge, calculate_Greedy, calculate_PI, calculate_UCB
 import logging
 
 if __name__ == "__main__":
@@ -71,7 +71,14 @@ if __name__ == "__main__":
                     function = calculate_TS
                 elif control_param[2] == "Hedge":
                     function = calculate_GPHedge
-                
+                elif control_param[2] == "Greedy":
+                    acqFunc = calculate_Greedy
+                elif control_param[2] == "PI":
+                    acqFunc = calculate_PI
+                elif control_param[2] == "UCB":
+                    acqFunc = calculate_UCB
+
+
                 start = time()
                 # there is a difference between the calculations required for the
                 # reduced order modesl (iteration) and the truth model (fused)
@@ -156,6 +163,7 @@ if __name__ == "__main__":
             
         except Exception as exc:
             logger.critical("Error completing Calculation | {}".format(exc))
+            logger.exception(exc)
             pass
         
         sleep(10)
