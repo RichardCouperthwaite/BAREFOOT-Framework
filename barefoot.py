@@ -330,10 +330,11 @@ class barefoot():
                     self.ROMInitOutput.append(np.zeros(self.initDataPathorNum[ii]))
                 count.append(0)
             # Obtain LHS initial data for Truth Model
-            initInput, check = apply_constraints(self.initDataPathorNum[ii+1], 
+            initInput, check = apply_constraints(self.initDataPathorNum[-1], 
                                                      self.nDim, self.res,
                                                       self.A, self.b, self.Aeq, self.beq, 
                                                       self.lb, self.ub, self.constr_func)
+            count.append(0)
             if check:
                 self.logger.debug("Initial Data - All constraints applied successfully")
             else:
