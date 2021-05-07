@@ -53,6 +53,8 @@ def knowledge_gradient(M, sn, mu, sigma):
         return c, A
     
     NU = []
+    nu_star = 0
+    x_star = 0
     
     for i in range(M):   
         a = mu
@@ -82,13 +84,14 @@ def knowledge_gradient(M, sn, mu, sigma):
         nu = np.log(sig)
         NU.append(nu)
         
-        try:
-            if nu>nu_star:
+        if np.isfinite(nu):
+            try:
+                if nu>nu_star:
+                    nu_star = nu
+                    x_star = i
+            except NameError:
                 nu_star = nu
                 x_star = i
-        except NameError:
-            nu_star = nu
-            x_star = i
     
     return nu_star, x_star, NU
 
@@ -243,3 +246,108 @@ def thompson_sampling(y, std):
     x_star = int(np.where(tsVal == nu_star)[0])
     
     return nu_star, x_star, tsVal
+
+def EHVI22(means,sigmas,goal,ref,pareto):
+    # means : GP mean estimation of objectives of the test points (fused means in
+    # multifidelity cases). Each column for 1 objective values
+    
+    # sigmas : uncertainty of GP mean estimations (std). Each column for 1 objective
+    
+    # goal : a row vector to define which objectives to be minimized or
+    # maximized. zero for minimizing and 1 for maximizing. Example: [ 0 0 1 0 ... ]
+    
+    # ref : hypervolume reference for calculations
+    
+    # pareto : Current true pareto front obtained so far
+    
+    ########### Note that in all variables, the order of columns should be the
+    ########### same. For example, the 1st column of all matrices above is
+    ########### related to the objective 1. Basically, each row = 1 design
+    ##########################################################################
+    
+    N_obj = means.shape[1]; ## number of objectives
+    
+    
+    ## Turn the problem into minimizing for all objectives:
+    ### this is essential as the method works for minimizing
+    for i in range(goal.shape[0]):
+   
+        if goal[i]==1:
+            means[:,i]=-1*means[:,i]
+            pareto[:,i]=-1*pareto[:,i]
+
+    
+    ## Sorting the non_dominated points considering the first objective
+    ##### It does not matter which objective to sort but lets do it with the
+    ##### 1st objective
+    I = np.argsort(pareto[:, 0])
+    pareto = pareto[I,:]
+    
+    ## Finding useless test points
+    ### this is done by checking if one is dominated with 95# certainty. (2 sigma)
+    ### so that if a test points has a very small probability to improve the
+    ### hypervolume, we discard it to avoid unnecessary EHVI calculations
+    
+    temp = means-2.*sigmas;
+    
+    ind = np.zeros((means.shape[0],1))
+    ehvi = np.zeros((means.shape[0],1))
+    
+    for i in range(means.shape[0]):
+        diff=pareto-temp[i,:]
+        for j in range(diff.shape[0]):
+            if np.max(diff[j,:])<0:
+                ind[i,1]=1;
+    
+    ## EHVI calculation for test points
+    for i in range(means.shape[0]):
+        if ind[i]==1:
+            ehvi[i,1]=0
+        else:
+            hvi = 0
+            box = 1
+            ### EHVI over the box from infinity to the ref point
+            for j in range(N_obj):
+                s = (ref[j]-means[i,j])/sigmas[i,j]
+                box = box*((ref[j]-means[i,j])*norm.cdf(s)+sigmas[i,j]*norm.pdf(s));
+
+            ### calculate how much adding a test point can improve the hypervolume
+            #         hvi = recursive(means(i,:),sigmas(i,:),ref,pareto);
+            
+            for zz in range(pareto.shape[0]-1):                
+                a = pareto[zz,:]
+                aa = np.maximum(pareto[zz,:],pareto[zz+1])
+                hvi_temp1=1
+                hvi_temp2=1
+                
+                for j in range(N_obj):
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (a[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp1 = hvi_temp1 * (up-low);
+
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (aa[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((aa[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp2 = hvi_temp2 * (up-low)
+                
+                
+                hvi = hvi + hvi_temp1 - hvi_temp2;
+            
+            a=pareto[-1,:]
+            hvi_temp1=1
+            for j in range(N_obj):
+                s_up = (ref[j]-means[j])/sigmas[j];
+                s_low = (a[j]-means[j])/sigmas[j];
+                up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up));
+                low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low));
+                hvi_temp1 = hvi_temp1 * (up-low);
+            hvi = hvi + hvi_temp1;
+            
+            print(box)
+            print(hvi)
+            ehvi[i,0]=box-(hvi[0])
+
+    return ehvi
