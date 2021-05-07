@@ -108,3 +108,23 @@ class gp_model:
         # The results are the log of the hyper-parameters, so return the
         # exponential of the results.
         return np.exp(results.x)
+    
+    
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    
+    x = np.linspace(0,10,10)
+    y = np.sin(x)
+    
+    plt.scatter(x,y)
+    
+    gp = gp_model(x, y, [1], 1, 0.05, 1, "SE")
+    
+    x_plot = np.linspace(0,10,1000)
+    
+    mean, var = gp.predict_var(x_plot)
+    
+    plt.fill_between(x_plot, mean+np.sqrt(var), mean-np.sqrt(var), alpha=0.5)
+    plt.plot(x_plot, mean)
+    
+    

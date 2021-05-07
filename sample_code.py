@@ -38,10 +38,9 @@ def truth(x):
 
 def runBatch():
     ROMList = [rom1, rom2, rom3]
-    framework = barefoot(ROMModelList=ROMList, 
-                         TruthModel=truth, 
+    framework = barefoot(TruthModel=truth, 
                          calcInitData=True, 
-                         initDataPathorNum=[2,2,2,2], 
+                         initDataPathorNum=[2], 
                          multiNode=0, 
                          workingDir=".", 
                          calculationName="BatchOnly", 
@@ -201,7 +200,7 @@ def runBAREFOOT():
                          workingDir=".", 
                          calculationName="FullBarefoot", 
                          nDim=2, 
-                         input_resolution=5, 
+                         input_resolution=0,#5, 
                          restore_calc=False,
                          updateROMafterTM=False, 
                          externalTM=False, 
@@ -248,6 +247,6 @@ def runBAREFOOT():
 
 if __name__ == "__main__":
     # Uncomment the function that you wish to run
-    runBatch()
-    #runReifi()
-    #runBAREFOOT()
+    #runBatch()
+    # runReifi()
+    runBAREFOOT()

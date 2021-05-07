@@ -10,8 +10,9 @@ from pyDOE import lhs
 from kmedoids import kMedoids
 from scipy.spatial import distance_matrix
 from acquisitionFunc import expected_improvement, knowledge_gradient, thompson_sampling, upper_conf_bound, probability_improvement
+from sklearn_extra.cluster import KMedoids
 import pandas as pd
-from pickle import load
+from pickle import load, dump
 
 def k_medoids(sample, num_clusters):
     # clusters the samples into the number of clusters (num_clusters) according 
@@ -20,6 +21,19 @@ def k_medoids(sample, num_clusters):
     D = distance_matrix(sample, sample)
     M, C = kMedoids(D, num_clusters)
     return M, C  
+
+def kmedoids_max(input_arr, n_clust):
+    kmedoids = KMedoids(n_clusters=n_clust, random_state=0).fit(input_arr)
+    new_medoids = []
+    for ii in range(n_clust):
+        new_cluster = input_arr[np.where(kmedoids.labels_ == ii)]
+        try:
+            max_index = np.where(input_arr[:,0] == np.max(new_cluster[:,0]))
+            new_medoids.append(max_index[0][0])
+        except ValueError:
+            pass
+    
+    return np.array(new_medoids)
 
 def call_model(param):
     # this function is used to call any model given in the dictionary of
@@ -230,16 +244,16 @@ def calculate_KG(param):
     # output list
     output[1] = nu_star/cost[jj]
     output[2] = x_star
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output.append(x_test[index_max,ii])
-    else:
-        output.append(x_test[index_max])
-    # Add the input values for the maximum knowledge gradient value
-    for i in range(x_test.shape[1]):
-        output.append(x_test[x_star,i])
-    # Return the results
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output.append(x_test[index_max,ii])
+    # else:
+    #     output.append(x_test[index_max])
+    # # Add the input values for the maximum knowledge gradient value
+    # for i in range(x_test.shape[1]):
+    #     output.append(x_test[x_star,i])
+    # # Return the results
     return output
 
 def calculate_EI(param):
@@ -294,16 +308,16 @@ def calculate_EI(param):
     # output list
     output[1] = nu_star/cost[jj]
     output[2] = x_star
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output.append(x_test[index_max,ii])
-    else:
-        output.append(x_test[index_max])
-    # Add the input values for the maximum knowledge gradient value
-    for i in range(x_test.shape[1]):
-        output.append(x_test[x_star,i])
-    # Return the results
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output.append(x_test[index_max,ii])
+    # else:
+    #     output.append(x_test[index_max])
+    # # Add the input values for the maximum knowledge gradient value
+    # for i in range(x_test.shape[1]):
+    #     output.append(x_test[x_star,i])
+    # # Return the results
     return output   
 
 
@@ -357,16 +371,16 @@ def calculate_TS(param):
     # output list
     output[1] = nu_star/cost[jj]
     output[2] = x_star
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output.append(x_test[index_max,ii])
-    else:
-        output.append(x_test[index_max])
-    # Add the input values for the maximum knowledge gradient value
-    for i in range(x_test.shape[1]):
-        output.append(x_test[x_star,i])
-    # Return the results
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output.append(x_test[index_max,ii])
+    # else:
+    #     output.append(x_test[index_max])
+    # # Add the input values for the maximum knowledge gradient value
+    # for i in range(x_test.shape[1]):
+    #     output.append(x_test[x_star,i])
+    # # Return the results
     return output   
 
 
@@ -419,16 +433,16 @@ def calculate_PI(param):
     # output list
     output[1] = nu_star/cost[jj]
     output[2] = x_star
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output.append(x_test[index_max,ii])
-    else:
-        output.append(x_test[index_max])
-    # Add the input values for the maximum knowledge gradient value
-    for i in range(x_test.shape[1]):
-        output.append(x_test[x_star,i])
-    # Return the results
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output.append(x_test[index_max,ii])
+    # else:
+    #     output.append(x_test[index_max])
+    # # Add the input values for the maximum knowledge gradient value
+    # for i in range(x_test.shape[1]):
+    #     output.append(x_test[x_star,i])
+    # # Return the results
     return output   
 
 
@@ -487,16 +501,16 @@ def calculate_UCB(param):
     # output list
     output[1] = nu_star/cost[jj]
     output[2] = x_star
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output.append(x_test[index_max,ii])
-    else:
-        output.append(x_test[index_max])
-    # Add the input values for the maximum knowledge gradient value
-    for i in range(x_test.shape[1]):
-        output.append(x_test[x_star,i])
-    # Return the results
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output.append(x_test[index_max,ii])
+    # else:
+    #     output.append(x_test[index_max])
+    # # Add the input values for the maximum knowledge gradient value
+    # for i in range(x_test.shape[1]):
+    #     output.append(x_test[x_star,i])
+    # # Return the results
     return output   
 
 
@@ -755,30 +769,30 @@ def calculate_GPHedge(param):
     
     
     
-    # Add the actual input values for the maximum of the fused model
-    if len(x_test.shape) > 1:
-        for ii in range(x_test.shape[1]):
-            output[0].append(x_test[index_max,ii])
-            output[1].append(x_test[index_max,ii])
-            output[2].append(x_test[index_max,ii])
-            output[3].append(x_test[index_max,ii])
-            output[4].append(x_test[index_max,ii])
-            output[5].append(x_test[index_max,ii])
-    else:
-        output[0].append(x_test[index_max])
-        output[1].append(x_test[index_max])
-        output[2].append(x_test[index_max])
-        output[3].append(x_test[index_max])
-        output[4].append(x_test[index_max])
-        output[5].append(x_test[index_max])
+    # # Add the actual input values for the maximum of the fused model
+    # if len(x_test.shape) > 1:
+    #     for ii in range(x_test.shape[1]):
+    #         output[0].append(x_test[index_max,ii])
+    #         output[1].append(x_test[index_max,ii])
+    #         output[2].append(x_test[index_max,ii])
+    #         output[3].append(x_test[index_max,ii])
+    #         output[4].append(x_test[index_max,ii])
+    #         output[5].append(x_test[index_max,ii])
+    # else:
+    #     output[0].append(x_test[index_max])
+    #     output[1].append(x_test[index_max])
+    #     output[2].append(x_test[index_max])
+    #     output[3].append(x_test[index_max])
+    #     output[4].append(x_test[index_max])
+    #     output[5].append(x_test[index_max])
         
-    for i in range(x_test.shape[1]):
-        output[0].append(x_test[output[0][2],i])
-        output[1].append(x_test[output[1][2],i])
-        output[2].append(x_test[output[2][2],i])
-        output[3].append(x_test[output[3][2],i])
-        output[4].append(x_test[output[4][2],i])
-        output[5].append(x_test[output[5][2],i])
+    # for i in range(x_test.shape[1]):
+    #     output[0].append(x_test[output[0][2],i])
+    #     output[1].append(x_test[output[1][2],i])
+    #     output[2].append(x_test[output[2][2],i])
+    #     output[3].append(x_test[output[3][2],i])
+    #     output[4].append(x_test[output[4][2],i])
+    #     output[5].append(x_test[output[5][2],i])
         
     return output
 
@@ -843,7 +857,6 @@ def calculate_Greedy(param):
         else:
             output.append(x_test[index_max])
     # Return the results
-    # print(output)
     return output   
 
 
@@ -981,8 +994,53 @@ def batchAcquisitionFunc(param):
         output = [nu_star, x_star]
         
     # return the maximum value and the index of the test point that corresponds
-    # with the maximum value
-    
-    print(output)
-    
+    # with the maximum value    
     return output
+
+def Pareto_finder(V,goal):
+    
+    # V is a matrix, each row is the objectives of one design points
+    
+    # goal : a row vector to define which objectives to be minimized or
+    # maximized. zero for minimizing and 1 for maximizing. Example: [ 0 0 1 0 ... ]
+    
+    
+    # Turn the problem into minimizing for all objectives:
+    for i in range(goal.shape[0]):
+    # for i = 1 : size(goal,2)
+        if goal[i]==1:
+            V[:,i]=-1*V[:,i]
+
+    pareto=[]
+    ind=[]
+    
+    for i in range(V.shape[0]):
+        p = V[i,:]
+        s = np.delete(V,i,0)
+        # s[i,:]=[]
+        trig = 0
+        for j in range(s.shape[0]):
+            temp = p-s[j,:]
+            if np.min(temp)>=0:
+                trig=1 # this means vector p is dominated
+
+        if trig==0:
+            pareto.append(p)
+            ind.append(i)
+
+    pareto = np.array(pareto)
+    ind = np.array(ind)
+    # Changing back the signs if were changed before.
+    
+    for i in range(goal.shape[0]):
+        if goal[i]==1:
+            pareto[:,i]=-1*pareto[:,i]
+
+    return pareto, ind
+
+def calculate_EHVI(param):
+    pass
+
+def storeObject(obj, filename):
+    with open(filename, 'wb') as f:
+        dump(obj, f)
