@@ -18,7 +18,8 @@ from multiprocessing import cpu_count
 from copy import deepcopy
 from util import cartesian, call_model, apply_constraints
 from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_Greedy, calculate_PI, calculate_UCB
-from util import calculate_GPHedge, evaluateFusedModel, batchAcquisitionFunc, kmedoids_max, calculate_EHVI, Pareto_finder, storeObject
+from util import calculate_GPHedge, evaluateFusedModel, batchAcquisitionFunc, kmedoids_max
+from util import fused_EHVI, calculate_EHVI, Pareto_finder, storeObject
 from gpModel import gp_model
 from sklearn_extra.cluster import KMedoids
 import logging
@@ -31,7 +32,7 @@ class barefoot():
                  A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
                  verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT",
                  maximize=True, train_func=[], reification=True, batch=True, 
-                 multiObjective=False, temp_input="Max"):
+                 multiObjective=False, multiObjectRef=[], temp_input="Max"):
         
         # this temp input can be used to adjust the performance of the framework temporarily
         # Current use: Toggle between Max, Sum and Mean approaches for the GPHedge Calculations.
@@ -92,6 +93,8 @@ class barefoot():
         
         # create logger to output framework progress
         self.logger = logging.getLogger(logname)
+        for h in self.logger.handlers:
+            self.logger.removeHandler(h)
         self.logger.setLevel(log_level)
         fh = logging.FileHandler('{}.log'.format(logname))
         fh.setLevel(log_level)
@@ -119,11 +122,14 @@ class barefoot():
                 self.__external_TM_data_load(workingDir, calculationName)
             else:
                 self.__load_from_save(workingDir, calculationName)
+            self.restore_calc = restore_calc
             self.timeCheck = time()
             self.logger.info("Previous Save State Restored")
         else:
+            self.restore_calc = restore_calc
             self.timeCheck = time()
             self.multiObjective = multiObjective
+            self.MORef = multiObjectRef
             self.ROM = ROMModelList
             self.TM = TruthModel
             self.TMInitInput = []
@@ -304,15 +310,13 @@ class barefoot():
     def __add_to_iterationData(self, calcTime, iterData):
         # Adds new data points to the Iteration Data Dataframe
         if self.multiObjective:
-            temp = np.zeros((iterData.shape[0],5+len(self.ROM)+self.nDim))
-            temp[:,0] = iterData[:,0]
-            temp[:,1] = calcTime
-            temp[:,2] = iterData[:,2]
-            temp[:,3] = iterData[:,3]
-            temp[:,4] = iterData[:,4+len(self.ROM)]
-            temp[:,5:5+len(self.ROM)] = iterData[:, 5:5+len(self.ROM)]
-            temp[:,(5+len(self.ROM)):] = iterData[:, (5+len(self.ROM)):]
-            temp = pd.DataFrame(temp, columns=self.iterationData.columns)
+            temp = np.zeros((1,5+len(self.ROM)+self.nDim))
+            temp[0,0] = self.currentIteration
+            temp[0,1] = calcTime
+            temp[0,2] = self.maxTM[0]
+            temp[0,3] = self.maxTM[1]
+            temp[0,4] = iterData[-1]
+            temp[0,5:5+len(self.ROM)] = iterData[0:len(self.ROM)]
         else:
             temp = np.zeros((1,4+len(self.ROM)))
             temp[0,0] = self.currentIteration
@@ -320,8 +324,8 @@ class barefoot():
             temp[0,2] = calcTime
             temp[0,3] = iterData[-1]
             temp[0,4:] = iterData[0:len(self.ROM)]
-            temp = pd.DataFrame(temp, columns=self.iterationData.columns)
-            self.iterationData = pd.concat([self.iterationData,temp])
+        temp = pd.DataFrame(temp, columns=self.iterationData.columns)
+        self.iterationData = pd.concat([self.iterationData,temp])
         self.logger.debug("Iteration {} Data saved to Dataframe".format(self.currentIteration))
         
     def __get_initial_data__(self):
@@ -330,7 +334,10 @@ class barefoot():
         params = []
         count = []
         param_index = 0
-        self.maxTM = -np.inf
+        if self.multiObjective:
+            self.maxTM = [-np.inf,-np.inf]
+        else:
+            self.maxTM = -np.inf
         if self.acquisitionFunc == "Hedge":
             self.gpHedgeHist = [[np.random.random()],[np.random.random()],
                                 [np.random.random()],[np.random.random()],
@@ -343,11 +350,27 @@ class barefoot():
                                 [np.random.random()],[np.random.random()]]
             self.gpHedgeProbTM = np.sum(self.gpHedgeHistTM, axis=1)
             self.gpHedgeTrackTM = []
+        if self.multiObjective:
+            if type(self.maximize) == list:
+                self.goal = np.array([-1,-1])
+                if self.maximize[0]:
+                    self.goal[0] = 1
+                if self.maximize[1]:
+                    self.goal[1] = 1
+            else:
+                if self.maximize:
+                    self.goal = np.array([1,1])
+                else:
+                    self.goal = np.array([-1,-1])
+        else:
+            if self.maximize:
+                self.goal = 1
+            else:
+                self.goal = -1
         # Check if data needs to be calculated or extracted
         if self.calcInitData:
             self.logger.debug("Start Calculation of Initial Data")
             # obtain LHS initial data for each reduced order model
-            ii = -1
             if self.reification:
                 for ii in range(len(self.ROM)):
                     count.append(0)                
@@ -371,7 +394,6 @@ class barefoot():
                         self.ROMInitOutput.append(np.zeros((self.initDataPathorNum[ii],2)))
                     else:
                         self.ROMInitOutput.append(np.zeros(self.initDataPathorNum[ii]))
-                count.append(0)
             # Obtain LHS initial data for Truth Model
             initInput, check = apply_constraints(self.initDataPathorNum[-1], 
                                                      self.nDim, self.res,
@@ -402,48 +424,37 @@ class barefoot():
                 temp_y = np.zeros(len(params))
             temp_index = np.zeros(len(params))
             self.logger.debug("Parameters Defined. Starting Concurrent.Futures Calculation")
-            if self.multiObjective:
-                if type(self.maximize) == list:
-                    self.goal = np.array([0,0])
-                    if self.maximize[0]:
-                        self.goal[0] = 1
-                    if self.maximize[1]:
-                        self.goal[1] = 1
-                else:
-                    if self.maximize:
-                        self.goal = np.array([1,1])
-                    else:
-                        self.goal = np.array([0,0])
-            else:
-                if self.maximize:
-                    self.goal = 1
-                else:
-                    self.goal = -1
             with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
                 for result_from_process in zip(params, executor.map(call_model, params)):
                     par, results = result_from_process
-                    if par["Model Index"] != -1:
+                    if par["Model Index"] != -1:                        
                         self.ROMInitInput[par["Model Index"]][count[par["Model Index"]],:] = par["Input Values"]
-                        self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = self.goal*results
+                        if self.multiObjective:
+                            self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = np.tile(self.goal, (results.shape[0]))*results
+                        else:
+                            self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = self.goal*results
                         temp_x[par["ParamIndex"],:] = par["Input Values"]
                         if self.multiObjective:
-                            temp_y[par["ParamIndex"],:] = results
+                            temp_y[par["ParamIndex"],:] = self.goal*results
                         else:
-                            temp_y[par["ParamIndex"]] = results
+                            temp_y[par["ParamIndex"]] = self.goal*results
                         temp_index[par["ParamIndex"]] = par["Model Index"]
                     else:
-                        print(self.TMInitInput) 
-                        print(par["Model Index"])
-                        print(count[par["Model Index"]])
                         self.TMInitInput[count[par["Model Index"]],:] = par["Input Values"]
                         self.TMInitOutput[count[par["Model Index"]]] = self.goal*results
-                        if np.max(results) > self.maxTM:
-                            self.maxTM = np.max(results)
+                        if self.multiObjective:
+                            if np.max(results[0,0]) > self.maxTM[0]:
+                                self.maxTM[0] = np.max(results[0,0])
+                            if np.max(results[0,1]) > self.maxTM[1]:
+                                self.maxTM[1] = np.max(results[0,1])
+                        else:
+                            if np.max(results) > self.maxTM:
+                                self.maxTM = np.max(results)
                         temp_x[par["ParamIndex"],:] = par["Input Values"]
                         if self.multiObjective:
-                            temp_y[par["ParamIndex"],:] = results
+                            temp_y[par["ParamIndex"],:] = self.goal*results
                         else:
-                            temp_y[par["ParamIndex"]] = results
+                            temp_y[par["ParamIndex"]] = self.goal*results
                         temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
             self.logger.debug("Concurrent.Futures Calculation Completed")
@@ -488,8 +499,10 @@ class barefoot():
                 temp_x[ind,:] = self.TMInitInput[jj,:]
                 if self.multiObjective:
                     temp_y[ind,:] = self.TMInitOutput[jj,:]
-                    if self.TMInitOutput[jj,0] > self.maxTM:
-                        self.maxTM = self.TMInitOutput[jj,0]
+                    if np.max(temp_y[0,0]) > self.maxTM[0]:
+                        self.maxTM[0] = np.max(temp_y[0,0])
+                    if np.max(temp_y[0,1]) > self.maxTM[1]:
+                        self.maxTM[1] = np.max(temp_y[0,1])
                 else:
                     temp_y[ind] = self.TMInitOutput[jj]
                     if self.TMInitOutput[jj] > self.maxTM:
@@ -499,14 +512,7 @@ class barefoot():
             count.append(self.TMInitInput.shape[0])
             self.logger.debug("Loading Data From File Completed")
         # Add initial data to dataframes
-        if self.multiObjective:
-            iterData = np.zeros((1,5+len(self.ROM)+self.nDim))
-            iterData[0,4:5+len(self.ROM)] = np.array(count)
-            iterData[0,0] = self.currentIteration
-        else:
-            iterData = np.array(count)
-            
-            
+        iterData = np.array(count)
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.__add_to_iterationData(time()-self.timeCheck, iterData)
         self.logger.debug("Initial Data Saved to Dataframes")
@@ -620,59 +626,67 @@ class barefoot():
         for ii in range(self.nDim):
             arr_list.append(temp)
         self.xFused = cartesian(*arr_list)
-        self.logger.debug("Create Reification Object")
-        if self.multiObjective:
-            self.TMInitOutput = np.array(self.TMInitOutput)
-            # build the reification object with the combined inputs and initial values
-            if self.reification:
-                self.ROMInitOutput = np.array(self.ROMInitOutput)
-                self.reificationObj = [model_reification(self.ROMInitInput, self.ROMInitOutput[:,0], 
-                                                  self.modelParam['model_l'], 
-                                                  self.modelParam['model_sf'], 
-                                                  self.modelParam['model_sn'], 
-                                                  self.modelParam['means'], 
-                                                  self.modelParam['std'], 
-                                                  self.modelParam['err_l'], 
-                                                  self.modelParam['err_sf'], 
-                                                  self.modelParam['err_sn'], 
-                                                  self.TMInitInput, self.TMInitOutput[:,0], 
-                                                  len(self.ROM), self.nDim, self.covFunc),
-                                       model_reification(self.ROMInitInput, self.ROMInitOutput[:,1], 
-                                                  self.modelParam['model_l'], 
-                                                  self.modelParam['model_sf'], 
-                                                  self.modelParam['model_sn'], 
-                                                  self.modelParam['means'], 
-                                                  self.modelParam['std'], 
-                                                  self.modelParam['err_l'], 
-                                                  self.modelParam['err_sf'], 
-                                                  self.modelParam['err_sn'], 
-                                                  self.TMInitInput, self.TMInitOutput[:,1], 
-                                                  len(self.ROM), self.nDim, self.covFunc)]
+        if not self.restore_calc:
+            self.logger.debug("Create Reification Object")
+            if self.multiObjective:
+                self.TMInitOutput = [np.array(self.TMInitOutput)[:,0],
+                                     np.array(self.TMInitOutput)[:,0]]
+                # build the reification object with the combined inputs and initial values
+                if self.reification:
+                    self.ROMInitOutput = np.array(self.ROMInitOutput)
+                    temp = [[],[]]
+                                    
+                    for pp in range(self.ROMInitOutput.shape[0]):
+                        temp[0].append(self.ROMInitOutput[pp,:,0])
+                        temp[1].append(self.ROMInitOutput[pp,:,1])
+                    
+                    self.reificationObj = [model_reification(self.ROMInitInput, temp[0], 
+                                                      self.modelParam['model_l'], 
+                                                      self.modelParam['model_sf'], 
+                                                      self.modelParam['model_sn'], 
+                                                      self.modelParam['means'], 
+                                                      self.modelParam['std'], 
+                                                      self.modelParam['err_l'], 
+                                                      self.modelParam['err_sf'], 
+                                                      self.modelParam['err_sn'], 
+                                                      self.TMInitInput, self.TMInitOutput[0], 
+                                                      len(self.ROM), self.nDim, self.covFunc),
+                                           model_reification(self.ROMInitInput, temp[1], 
+                                                      self.modelParam['model_l'], 
+                                                      self.modelParam['model_sf'], 
+                                                      self.modelParam['model_sn'], 
+                                                      self.modelParam['means'], 
+                                                      self.modelParam['std'], 
+                                                      self.modelParam['err_l'], 
+                                                      self.modelParam['err_sf'], 
+                                                      self.modelParam['err_sn'], 
+                                                      self.TMInitInput, self.TMInitOutput[1], 
+                                                      len(self.ROM), self.nDim, self.covFunc)]
+                else:
+                    self.modelGP = [gp_model(self.TMInitInput, self.TMInitOutput[0], 
+                                            np.ones((self.nDim)), 1, 0.05, 
+                                            self.nDim, self.covFunc),
+                                    gp_model(self.TMInitInput, self.TMInitOutput[1], 
+                                            np.ones((self.nDim)), 1, 0.05, 
+                                            self.nDim, self.covFunc)]
             else:
-                self.modelGP = [gp_model(self.TMInitInput, self.TMInitOutput[:,0], 
-                                        np.ones((self.nDim)), 1, 0.05, 
-                                        self.nDim, self.covFunc),
-                                gp_model(self.TMInitInput, self.TMInitOutput[:,1], 
-                                        np.ones((self.nDim)), 1, 0.05, 
-                                        self.nDim, self.covFunc)]
-        else:
-            # build the reification object with the combined inputs and initial values
-            if self.reification:
-                self.reificationObj = model_reification(self.ROMInitInput, self.ROMInitOutput, 
-                                                  self.modelParam['model_l'], 
-                                                  self.modelParam['model_sf'], 
-                                                  self.modelParam['model_sn'], 
-                                                  self.modelParam['means'], 
-                                                  self.modelParam['std'], 
-                                                  self.modelParam['err_l'], 
-                                                  self.modelParam['err_sf'], 
-                                                  self.modelParam['err_sn'], 
-                                                  self.TMInitInput, self.TMInitOutput, 
-                                                  len(self.ROM), self.nDim, self.covFunc)
-            else:
-                self.modelGP = gp_model(self.TMInitInput, self.TMInitOutput, 
-                                        np.ones((self.nDim)), 1, 0.05, 
-                                        self.nDim, self.covFunc)
+                # build the reification object with the combined inputs and initial values
+                if self.reification:
+                    self.reificationObj = model_reification(self.ROMInitInput, self.ROMInitOutput, 
+                                                      self.modelParam['model_l'], 
+                                                      self.modelParam['model_sf'], 
+                                                      self.modelParam['model_sn'], 
+                                                      self.modelParam['means'], 
+                                                      self.modelParam['std'], 
+                                                      self.modelParam['err_l'], 
+                                                      self.modelParam['err_sf'], 
+                                                      self.modelParam['err_sn'], 
+                                                      self.TMInitInput, self.TMInitOutput, 
+                                                      len(self.ROM), self.nDim, self.covFunc)
+                else:
+                    self.modelGP = gp_model(self.TMInitInput, self.TMInitOutput, 
+                                            np.ones((self.nDim)), 1, 0.05, 
+                                            self.nDim, self.covFunc)
         self.allTMInput = []
         self.allTMOutput = []
         self.tmBudgetLeft = self.tmBudget
@@ -727,9 +741,14 @@ class barefoot():
         
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
-                model_temp = [np.expand_dims(x_test[kk], axis=0), 
-                              np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
-                              jj]
+                if self.multiObjective:
+                    means = [np.expand_dims(np.array([new_mean[jj][0][kk]]), axis=0),
+                             np.expand_dims(np.array([new_mean[jj][1][kk]]), axis=0)]
+                    model_temp = [means, self.goal, self.MORef, self.pareto[0]]
+                else:
+                    model_temp = [np.expand_dims(x_test[kk], axis=0), 
+                                  np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
+                                  jj]
                 if self.batch:
                     for mm in range(self.hpCount):
                         parameterFileData.append((self.currentIteration+1, model_temp, self.xFused, self.fusedModelHP[mm,:],
@@ -898,10 +917,9 @@ class barefoot():
         for jj in range(len(self.ROM)):
             for kk in range(self.sampleCount):
                 if self.multiObjective:
-                    model_temp = [np.expand_dims(x_test[kk], axis=0), 
-                                  np.expand_dims(np.array([new_mean[0][jj][kk]]), axis=0), 
-                                  np.expand_dims(np.array([new_mean[1][jj][kk]]), axis=0),
-                                  jj]
+                    means = [np.expand_dims(np.array([new_mean[jj][0][kk]]), axis=0),
+                             np.expand_dims(np.array([new_mean[jj][1][kk]]), axis=0)]
+                    model_temp = [means, self.goal, self.MORef, self.pareto[0]]
                 else:
                     model_temp = [np.expand_dims(x_test[kk], axis=0), 
                                   np.expand_dims(np.array([new_mean[jj][kk]]), axis=0), 
@@ -987,8 +1005,14 @@ class barefoot():
         # Save the reification object to a file
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
+            
+        if self.multiObjective:
+            extra_data = [self.pareto[0], self.goal, self.MORef]
+        else:
+            extra_data = []
+            
         for mm in range(self.hpCount):
-            parameterFileData.append((self.currentIteration+1, [], self.xFused, self.fusedModelHP[mm,:],
+            parameterFileData.append((self.currentIteration+1, extra_data, self.xFused, self.fusedModelHP[mm,:],
                             self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
             parameters.append([parameterIndex, parameterFileIndex])
             parameterIndex += 1
@@ -1100,9 +1124,14 @@ class barefoot():
         with open("data/reificationObj", 'wb') as f:
             dump(self.reificationObj, f)
             
+        if self.multiObjective:
+            extra_data = [self.pareto[0], self.goal, self.MORef]
+        else:
+            extra_data = []
+            
         if self.batch:
             for mm in range(self.hpCount):
-                parameterFileData.append((self.currentIteration+1, [], self.xFused, self.fusedModelHP[mm,:],
+                parameterFileData.append((self.currentIteration+1, extra_data, self.xFused, self.fusedModelHP[mm,:],
                                 self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
                 parameters.append([parameterIndex, parameterFileIndex])
                 parameterIndex += 1
@@ -1114,7 +1143,7 @@ class barefoot():
                     parameterFileIndex += 1
                     parameterIndex = 0
         else:
-            parameterFileData.append((self.currentIteration+1, [], self.xFused, self.fusedHP,
+            parameterFileData.append((self.currentIteration+1, extra_data, self.xFused, self.fusedHP,
                             self.covFunc, tm_test, self.maxTM, 0.01, self.tmSampleOpt))
             parameters.append([parameterIndex, parameterFileIndex])
             parameterIndex += 1
@@ -1139,9 +1168,14 @@ class barefoot():
             fused_output = []
         self.logger.info("Start Max Value Calculations | {} Sets".format(len(parameters)))
         count = 0
+        if self.multiObjective:
+            func = fused_EHVI
+        else:
+            func = fused_calculate
+        
         # Run the concurrent processes and save the outputs
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
-            for result_from_process in zip(parameters, executor.map(fused_calculate,parameters)):
+            for result_from_process in zip(parameters, executor.map(func,parameters)):
                 params, results = result_from_process
                 if self.tmSampleOpt == "Hedge":
                     fused_out[0].append(results[0][0])
@@ -1182,7 +1216,10 @@ class barefoot():
         # determined points. This is done in parallel to reduce the time taken
         params = []
         count = np.zeros((len(self.ROM)+1)) 
-        current = np.array(self.iterationData.iloc[:,3:])[-1,:]
+        if self.multiObjective:
+            current = np.array(self.iterationData.iloc[:,4:5+len(self.ROM)])[-1,:]
+        else:
+            current = np.array(self.iterationData.iloc[:,3:])[-1,:]
         count[0:len(self.ROM)] = current[1:]
         count[-1] = current[0]
         param_index = 0
@@ -1196,7 +1233,10 @@ class barefoot():
             param_index += 1
 
         temp_x = np.zeros((len(params), self.nDim))
-        temp_y = np.zeros(len(params))
+        if self.multiObjective:
+            temp_y = np.zeros((len(params),2))
+        else:
+            temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params)) 
         costs = np.zeros(len(params))
         # Run the concurrent calculations and extract the results
@@ -1204,12 +1244,23 @@ class barefoot():
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
+                if len(results.shape) == 1:
+                    results = np.expand_dims(results, axis=0)
+                
+                if self.multiObjective:
+                    results = self.goal*results
+                    temp_y[par["ParamIndex"],:] = results
+                else:
+                    if not self.maximize:
+                        results = (-1)*results
+                    temp_y[par["ParamIndex"]] = results
                 temp_x[par["ParamIndex"],:] = par["Input Values"]
-                temp_y[par["ParamIndex"]] = results
                 temp_index[par["ParamIndex"]] = par["Model Index"]
-                if not self.maximize:
-                    results = (-1)*results
-                self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
+                if self.multiObjective:
+                    self.reificationObj[0].update_GP(par["Input Values"], results[0,0], par["Model Index"])
+                    self.reificationObj[1].update_GP(par["Input Values"], results[0,1], par["Model Index"])
+                else:
+                    self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
                 count[par["Model Index"]] += 1
         return temp_x, temp_y, temp_index, costs, count
@@ -1219,38 +1270,76 @@ class barefoot():
         # framework. The parameters for the calculation are defined elsewhere
         # and this framework just runs the evaluations
         temp_x = np.zeros((len(params), self.nDim))
-        temp_y = np.zeros(len(params))
+        if self.multiObjective:
+            temp_y = np.zeros((len(params),2))
+        else:
+            temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params)) 
         costs = np.zeros(len(params))
+        passed_calcs = []
         # Run the concurrent calculations and extract the results
         self.logger.info("Start Truth Model Evaluations | {} Sets".format(len(params)))
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
+                if len(results.shape) == 1:
+                    results = np.expand_dims(results, axis=0)
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
                 # if the truth function fails to evaluate, it should return false
                 # and therefore the results are not included in the output
-                if results != False:
+                if self.multiObjective:
+                    try:
+                        if results == False:
+                            results_evaluate = False
+                    except ValueError:
+                        results_evaluate = True
+                        passed_calcs.append(par["ParamIndex"])
+                else:
+                    if results != False:
+                        results_evaluate = True
+                        passed_calcs.append(par["ParamIndex"])
+                    else:
+                        results_evaluate = False
+                
+                if results_evaluate:
+                    if self.multiObjective:
+                        results = self.goal*results
+                        temp_y[par["ParamIndex"],:] = self.goal*results
+                    else:
+                        if not self.maximize:
+                            results = (-1)*results
+                            temp_y[par["ParamIndex"]] = results
                     temp_x[par["ParamIndex"],:] = par["Input Values"]
-                    temp_y[par["ParamIndex"]] = results
                     temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
-                    if not self.maximize:
-                        results = (-1)*results
-                    if self.reification:
-                        self.reificationObj.update_truth(par["Input Values"], results)
+                    if self.multiObjective:
+                        if self.reification:
+                            self.reificationObj[0].update_truth(par["Input Values"], results[0,0])
+                            self.reificationObj[1].update_truth(par["Input Values"], results[0,1])
+                        else:
+                            self.modelGP[0].update(par["Input Values"], results[0,0], 0.05, False)
+                            self.modelGP[1].update(par["Input Values"], results[0,1], 0.05, False)
                     else:
-                        self.modelGP.update(par["Input Values"], results, 0.05, False)
+                        if self.reification:
+                            self.reificationObj.update_truth(par["Input Values"], results)
+                        else:
+                            self.modelGP.update(par["Input Values"], results, 0.05, False)
         # Remove any calculations that failed from the output and save the 
         # data
-        temp_x = temp_x[np.where(temp_y != 0)]
-        temp_y = temp_y[np.where(temp_y != 0)]
-        temp_index = temp_index[np.where(temp_y != 0)]
+        temp_x = temp_x[passed_calcs]
+        temp_y = temp_y[passed_calcs]
+        temp_index = temp_index[passed_calcs]
         self.logger.info("Truth Model Evaluations Completed")
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
-        if np.max(temp_y) > self.maxTM:
-            self.maxTM = np.max(temp_y)
+        if self.multiObjective:
+            if np.max(temp_y[:,0]) > self.maxTM[0]:
+                self.maxTM[0] = np.max(temp_y[:,0])
+            if np.max(temp_y[:,1]) > self.maxTM[1]:
+                self.maxTM[1] = np.max(temp_y[:,1])
+        else:
+            if np.max(temp_y) > self.maxTM:
+                self.maxTM = np.max(temp_y)
         # Return the updated model call counts
         return count
     
@@ -1527,18 +1616,19 @@ class barefoot():
                 
                 if self.multiObjective:
                     if self.reification:
-                        new_mean = [[],[]]
+                        new_mean = []
                         # obtain predictions from the low-order GPs
                         for iii in range(len(self.ROM)):
-                            new, var = self.reificationObj[0].predict_low_order(x_test, iii)
-                            new_mean[0].append(new)
-                            new, var = self.reificationObj[1].predict_low_order(x_test, iii)
-                            new_mean[1].append(new)
+                            new1, var1 = self.reificationObj[0].predict_low_order(x_test, iii)
+                            
+                            new2, var2 = self.reificationObj[1].predict_low_order(x_test, iii)
+                            new_mean.append([new1, new2])
+                
                     else:
-                        new_mean = [[],[]]
-                        new_mean[0], var[0] = self.modelGP[0].predict_var(x_test)
-                        new_mean[1], var[1] = self.modelGP[1].predict_var(x_test)
-                    
+                        new_mean = []
+                        new1, var1 = self.modelGP[0].predict_var(x_test)
+                        new2, var2 = self.modelGP[1].predict_var(x_test)
+                        new_mean.append([new1, new2])
                 else:
                     if self.reification:
                         new_mean = []
@@ -1720,7 +1810,12 @@ class barefoot():
             parameters = []
             paramFileData = []
             count = np.zeros((len(self.ROM)+1)) 
-            current = np.array(self.iterationData.iloc[:,3:])[-1,:]
+            if self.multiObjective:
+                current = np.array(self.iterationData.iloc[:,4:5+len(self.ROM)])[-1,:]
+                extra_data = [self.pareto[0], self.goal, self.MORef]
+            else:
+                current = np.array(self.iterationData.iloc[:,3:])[-1,:]
+                extra_data = []
             count[0:len(self.ROM)] = current[1:]
             count[-1] = current[0]
             parameterIndex = 0
@@ -1730,7 +1825,7 @@ class barefoot():
             
             for jj in range(self.hpCount):
                 paramFileData.append((self.currentIteration+1, x_test, self.fusedModelHP[jj,:], 
-                                          self.maxTM, self.tmSampleOpt)) 
+                                          self.maxTM, self.tmSampleOpt, extra_data)) 
                 parameters.append([parameterIndex, parameterFileIndex])
                 parameterIndex += 1
                 # save each 1000 parameter sets to a file to reduce the amount of memory used
@@ -2097,12 +2192,18 @@ class barefoot():
         TMData = np.array(TMData)
         
         temp_x = np.zeros((TMData.shape[0], self.nDim))
-        temp_y = np.zeros((TMData.shape[0]))
+        if self.multiObjective:
+            temp_y = np.zeros((TMData.shape[0], 2))
+        else:
+            temp_y = np.zeros((TMData.shape[0]))
         temp_index = np.zeros((TMData.shape[0]))
         
         for ii in range(TMData.shape[0]):
             temp_x[ii,:] = TMData[ii,0:self.nDim]
-            temp_y[ii] = TMData[ii,self.nDim+1]
+            if self.multiObjective:
+                temp_y[ii,:] = TMData[ii,self.nDim+1:self.nDim+3]
+            else:
+                temp_y[ii] = TMData[ii,self.nDim+1]
             temp_index[ii] = -1
             count[-1] += 1
         # After loading the data, the reification object is updated and the new
@@ -2114,8 +2215,12 @@ class barefoot():
         self.reificationObj.update_truth(temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
         
-        if np.max(temp_y) > self.maxTM:
-            self.maxTM = np.max(temp_y)
+        if self.multiObjective:
+            if np.max(temp_y[:,0]) > self.maxTM[:,0]:
+                self.maxTM[:,0] = np.max(temp_y[:,0])
+        else:
+            if np.max(temp_y) > self.maxTM:
+                self.maxTM = np.max(temp_y)
             
         self.__add_to_iterationData(time()-self.timeCheck, count)
         self.timeCheck = time()
@@ -2149,37 +2254,42 @@ def model1c(x):
     if len(x.shape) == 1:
         x = np.expand_dims(x, axis=0)
     x = np.pi*(x*2 - 1)
-    # return [-80*np.sin(2*x[:,0])/(441*np.pi) - 160*np.sin(4*x[:,0])/(81*np.pi) + np.pi*np.sin(5*x[:,0])/2 - 48*np.sin(x[:,1])/(1225*np.pi) - 16*np.sin(3*x[:,1])/(81*np.pi) - 240*np.sin(5*x[:,1])/(121*np.pi), 0]
-    return -80*np.sin(2*x[:,0])/(441*np.pi) - 160*np.sin(4*x[:,0])/(81*np.pi) + np.pi*np.sin(5*x[:,0])/2 - 48*np.sin(x[:,1])/(1225*np.pi) - 16*np.sin(3*x[:,1])/(81*np.pi) - 240*np.sin(5*x[:,1])/(121*np.pi)
+    return np.array([-80*np.sin(2*x[:,0])/(441*np.pi) - 160*np.sin(4*x[:,0])/(81*np.pi) + np.pi*np.sin(5*x[:,0])/2,
+            -48*np.sin(x[:,1])/(1225*np.pi) - 16*np.sin(3*x[:,1])/(81*np.pi) - 240*np.sin(5*x[:,1])/(121*np.pi)]).transpose()
+    # return -80*np.sin(2*x[:,0])/(441*np.pi) - 160*np.sin(4*x[:,0])/(81*np.pi) + np.pi*np.sin(5*x[:,0])/2 - 48*np.sin(x[:,1])/(1225*np.pi) - 16*np.sin(3*x[:,1])/(81*np.pi) - 240*np.sin(5*x[:,1])/(121*np.pi)
 
 def model2c(x):
     if len(x.shape) == 1:
         x = np.expand_dims(x, axis=0)
     x = np.pi*(x*2 - 1)
-    # return [-60*np.sin(2.5*x[:,0])/(441*np.pi) - 60*np.sin(0.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.2*x[:,0])/(81*np.pi) + np.pi*np.sin(5.3*x[:,0])/2 - 16*np.sin(3.2*x[:,1])/(81*np.pi) - 240*np.sin(5.3*x[:,1])/(121*np.pi), 0]
-    return -60*np.sin(2.5*x[:,0])/(441*np.pi) - 60*np.sin(0.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.2*x[:,0])/(81*np.pi) + np.pi*np.sin(5.3*x[:,0])/2 - 16*np.sin(3.2*x[:,1])/(81*np.pi) - 240*np.sin(5.3*x[:,1])/(121*np.pi)
+    return np.array([-60*np.sin(2.5*x[:,0])/(441*np.pi) - 160*np.sin(4.2*x[:,0])/(81*np.pi) + np.pi*np.sin(5.3*x[:,0])/2,
+            -60*np.sin(0.5*x[:,1])/(1200*np.pi) - 16*np.sin(3.2*x[:,1])/(81*np.pi) - 240*np.sin(5.3*x[:,1])/(121*np.pi)]).transpose()
+    # return -60*np.sin(2.5*x[:,0])/(441*np.pi) - 60*np.sin(0.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.2*x[:,0])/(81*np.pi) + np.pi*np.sin(5.3*x[:,0])/2 - 16*np.sin(3.2*x[:,1])/(81*np.pi) - 240*np.sin(5.3*x[:,1])/(121*np.pi)
 
 def model3c(x):
     if len(x.shape) == 1:
         x = np.expand_dims(x, axis=0)
     x = np.pi*(x*2 - 1)
-    # return [-100*np.sin(1.5*x[:,0])/(400*np.pi) - 36*np.sin(1.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.5*x[:,0])/(81*np.pi) + np.pi*np.sin(5.5*x[:,0])/2 - 16*np.sin(3.5*x[:,1])/(81*np.pi) - 240*np.sin(5.5*x[:,1])/(121*np.pi), 0]
-    return -100*np.sin(1.5*x[:,0])/(400*np.pi) - 36*np.sin(1.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.5*x[:,0])/(81*np.pi) + np.pi*np.sin(5.5*x[:,0])/2 - 16*np.sin(3.5*x[:,1])/(81*np.pi) - 240*np.sin(5.5*x[:,1])/(121*np.pi)
+    return np.array([-100*np.sin(1.5*x[:,0])/(400*np.pi) - 160*np.sin(4.5*x[:,0])/(81*np.pi) + np.pi*np.sin(5.5*x[:,0])/2, 
+            -36*np.sin(1.5*x[:,1])/(1200*np.pi) - 16*np.sin(3.5*x[:,1])/(81*np.pi) - 240*np.sin(5.5*x[:,1])/(121*np.pi)]).transpose()
+    # return -100*np.sin(1.5*x[:,0])/(400*np.pi) - 36*np.sin(1.5*x[:,1])/(1200*np.pi) - 160*np.sin(4.5*x[:,0])/(81*np.pi) + np.pi*np.sin(5.5*x[:,0])/2 - 16*np.sin(3.5*x[:,1])/(81*np.pi) - 240*np.sin(5.5*x[:,1])/(121*np.pi)
 
 def truthmodel(x):
     if len(x.shape) == 1:
         x = np.expand_dims(x, axis=0)
     x = np.pi*(x*2 - 1)
-    # return [np.abs(x[:,0])*np.sin(5*x[:,0]) + np.abs(x[:,1])*np.sin(6*x[:,1]), 0]
-    return np.abs(x[:,0])*np.sin(5*x[:,0]) + np.abs(x[:,1])*np.sin(6*x[:,1])
+    return np.array([np.abs(x[:,0])*np.sin(5*x[:,0]), 
+            np.abs(x[:,1])*np.sin(6*x[:,1])]).transpose()
+    # return np.abs(x[:,0])*np.sin(5*x[:,0]) + np.abs(x[:,1])*np.sin(6*x[:,1])
 
 def runMultiObjective(gg):
     ROMList = [model1c, model2c, model3c]
     framework = barefoot(ROMModelList=ROMList, TruthModel=truthmodel,  
-                    calcInitData=True, initDataPathorNum=[2,2,2,5], nDim=2, 
+                         calcInitData=False, initDataPathorNum="data/testMOInitData", nDim=2, 
+                    #calcInitData=True, initDataPathorNum=[2,2,2,5], nDim=2, 
                     calculationName="bfIMMI-{}".format(gg), acquisitionFunc="EI",
                     restore_calc=False, logname="barefoot", tmSampleOpt="EI", multiNode=0,
-                    multiObjective=False)
+                    multiObjective=True, multiObjectRef=np.array([-np.pi, -np.pi]), reification=False)
     
     modelParam = {'model_l': [[0.1608754, 0.2725361],
                                   [0.17094462, 0.28988983],
@@ -2195,7 +2305,7 @@ def runMultiObjective(gg):
     
     framework.initialize_parameters(modelParam=modelParam, covFunc="M32", iterLimit=50,  
                                       sampleCount=25, hpCount=50, batchSize=2, 
-                                      tmIter=5, upperBound=1, lowBound=0.0001, fusedPoints=10)
+                                      tmIter=1, upperBound=1, lowBound=0.0001, fusedPoints=10)
     
     framework.run_optimization()
 

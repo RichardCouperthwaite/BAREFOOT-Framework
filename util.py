@@ -13,6 +13,22 @@ from acquisitionFunc import expected_improvement, knowledge_gradient, thompson_s
 from sklearn_extra.cluster import KMedoids
 import pandas as pd
 from pickle import load, dump
+from scipy.stats import norm
+
+
+# import logging
+# # create logger to output framework progress
+# logger = logging.getLogger("Util")
+# logger.setLevel(logging.DEBUG)
+# sh = logging.StreamHandler()
+# sh.setLevel(logging.DEBUG)
+# # create formatter and add it to the handlers
+# formatter = logging.Formatter('%(name)s - %(message)s')
+# sh.setFormatter(formatter)
+# # add the handler to the logger
+# logger.addHandler(sh)
+
+
 
 def k_medoids(sample, num_clusters):
     # clusters the samples into the number of clusters (num_clusters) according 
@@ -892,16 +908,121 @@ def batchAcquisitionFunc(param):
         modelGP = load(f)
 
     xi = 0.01
-    iteration, x_test, fusedModelHP, curr_max, acqFunc = data[param[0]]
+    iteration, x_test, fusedModelHP, curr_max, acqFunc, extra = data[param[0]]
     
-    modelGP.l_param = fusedModelHP[1:]
-    modelGP.sigma_f = fusedModelHP[0]
-    modelGP.kk = modelGP.create_kernel()
-    modelGP.gp = modelGP.create_gp()
-    fused_mean, fused_var = modelGP.predict_cov(x_test)
+    if type(modelGP) == list:
+        modelGP[0].l_param = fusedModelHP[1:]
+        modelGP[0].sigma_f = fusedModelHP[0]
+        modelGP[0].kk = modelGP[0].create_kernel()
+        modelGP[0].gp = modelGP[0].create_gp()
+        modelGP[1].l_param = fusedModelHP[1:]
+        modelGP[1].sigma_f = fusedModelHP[0]
+        modelGP[1].kk = modelGP[1].create_kernel()
+        modelGP[1].gp = modelGP[1].create_gp()
+        pareto, goal, ref = extra
+        means = np.zeros((x_test.shape[0], 2))
+        sigmas = np.zeros((x_test.shape[0], 2))
+        
+        m1, v1 = modelGP[0].predict_cov(x_test)
+        m2, v2 = modelGP[1].predict_cov(x_test)
+        
+        means[:,0] = m1
+        means[:,1] = m2
+        sigmas[:,0] = np.sqrt(np.diag(v1))
+        sigmas[:,1] = np.sqrt(np.diag(v2))
+        
+        N_obj = 2 ## number of objectives
+        
+        
+    else:
+        modelGP.l_param = fusedModelHP[1:]
+        modelGP.sigma_f = fusedModelHP[0]
+        modelGP.kk = modelGP.create_kernel()
+        modelGP.gp = modelGP.create_gp()
+        fused_mean, fused_var = modelGP.predict_cov(x_test)
     
+    if acqFunc == "EHVI":
+        # ## Turn the problem into minimizing for all objectives:
+        # ### this is essential as the method works for minimizing
+        for i in range(goal.shape[0]):
+            means[:,i]=-1*means[:,i]
+            pareto[:,i]=-1*pareto[:,i]
     
-    if acqFunc == "TS":
+        
+        
+        ## Sorting the non_dominated points considering the first objective
+        ##### It does not matter which objective to sort but lets do it with the
+        ##### 1st objective
+        I = np.argsort(pareto[:, 0])
+        pareto = pareto[I,:]
+        
+        ## Finding useless test points
+        ### this is done by checking if one is dominated with 95# certainty. (2 sigma)
+        ### so that if a test points has a very small probability to improve the
+        ### hypervolume, we discard it to avoid unnecessary EHVI calculations
+        
+        temp = means-2.*sigmas;
+        
+        ind = np.zeros((means.shape[0],1))
+        ehvi = np.zeros((means.shape[0],1))
+        
+        for i in range(means.shape[0]):
+            diff=pareto-temp[i,:]
+            for j in range(diff.shape[0]):
+                if np.max(diff[j,:])<0:
+                    ind[i,0]=1;
+        
+        ## EHVI calculation for test points
+        for i in range(means.shape[0]):
+            if ind[i]==1:
+                ehvi[i,0]=0
+            else:
+                hvi = 0
+                box = 1
+                ### EHVI over the box from infinity to the ref point
+                for j in range(N_obj):
+                    s = (ref[j]-means[i,j])/sigmas[i,j]
+                    box = box*((ref[j]-means[i,j])*norm.cdf(s)+sigmas[i,j]*norm.pdf(s));
+    
+                ### calculate how much adding a test point can improve the hypervolume
+                #         hvi = recursive(means(i,:),sigmas(i,:),ref,pareto);
+                
+                for zz in range(pareto.shape[0]-1):                
+                    a = pareto[zz,:]
+                    aa = np.maximum(pareto[zz,:],pareto[zz+1])
+                    hvi_temp1=1
+                    hvi_temp2=1
+                    
+                    for j in range(N_obj):
+                        s_up = (ref[j]-means[j])/sigmas[j]
+                        s_low = (a[j]-means[j])/sigmas[j]
+                        up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                        low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                        hvi_temp1 = hvi_temp1 * (up-low);
+    
+                        s_up = (ref[j]-means[j])/sigmas[j]
+                        s_low = (aa[j]-means[j])/sigmas[j]
+                        up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                        low = ((aa[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                        hvi_temp2 = hvi_temp2 * (up-low)
+                    
+                    
+                    hvi = hvi + hvi_temp1 - hvi_temp2;
+                
+                a=pareto[-1,:]
+                hvi_temp1=1
+                for j in range(N_obj):
+                    s_up = (ref[j]-means[j])/sigmas[j];
+                    s_low = (a[j]-means[j])/sigmas[j];
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up));
+                    low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low));
+                    hvi_temp1 = hvi_temp1 * (up-low);
+                hvi = hvi + hvi_temp1;
+                ehvi[i,0]=box-(hvi[0])
+        nu_star = np.max(ehvi)
+        x_star = np.where(ehvi == np.max(ehvi))[0][0]
+        output = [nu_star, x_star]
+    elif acqFunc == "TS":
         """
         Thompson sampling approach
         This approach uses the uncertainty, but is quite significantly slower
@@ -1008,8 +1129,8 @@ def Pareto_finder(V,goal):
     # Turn the problem into minimizing for all objectives:
     for i in range(goal.shape[0]):
     # for i = 1 : size(goal,2)
-        if goal[i]==1:
-            V[:,i]=-1*V[:,i]
+        # if goal[i]==1:
+        V[:,i]=-1*V[:,i]
 
     pareto=[]
     ind=[]
@@ -1027,19 +1148,279 @@ def Pareto_finder(V,goal):
         if trig==0:
             pareto.append(p)
             ind.append(i)
-
+    
     pareto = np.array(pareto)
+    if len(pareto.shape) == 1:
+        pareto = np.expand_dims(pareto, axis=0)
     ind = np.array(ind)
     # Changing back the signs if were changed before.
-    
     for i in range(goal.shape[0]):
-        if goal[i]==1:
-            pareto[:,i]=-1*pareto[:,i]
+        # if goal[i]==1:
+        pareto[:,i]=-1*pareto[:,i]
 
     return pareto, ind
 
 def calculate_EHVI(param):
-    pass
+    # means : GP mean estimation of objectives of the test points (fused means in
+    # multifidelity cases). Each column for 1 objective values
+    
+    # sigmas : uncertainty of GP mean estimations (std). Each column for 1 objective
+    
+    # goal : a row vector to define which objectives to be minimized or
+    # maximized. zero for minimizing and 1 for maximizing. Example: [ 0 0 1 0 ... ]
+    
+    # ref : hypervolume reference for calculations
+    
+    # pareto : Current true pareto front obtained so far
+    
+    ########### Note that in all variables, the order of columns should be the
+    ########### same. For example, the 1st column of all matrices above is
+    ########### related to the objective 1. Basically, each row = 1 design
+    ##########################################################################
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (finish, model_data, x_fused, fused_model_HP, \
+     kernel, x_test, jj, kk, mm, true_sample_count, cost, curr_max) = data[param[0]]
+        
+    mean_train, goal, ref, pareto = model_data
+    
+    # Initialize the output  
+    output = [0,0,0,jj,kk,mm]
+    # Create the fused model
+    model_temp[0].update_GP(np.expand_dims(x_test[kk], axis=0), mean_train[0], jj)
+    model_temp[0].create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    model_temp[1].update_GP(np.expand_dims(x_test[kk], axis=0), mean_train[1], jj)
+    model_temp[1].create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    
+    means = np.zeros((x_test.shape[0], 2))
+    sigmas = np.zeros((x_test.shape[0], 2))
+    
+    m1, v1 = model_temp[0].predict_fused_GP(x_test)
+    m2, v2 = model_temp[1].predict_fused_GP(x_test)
+    
+    means[:,0] = m1
+    means[:,1] = m2
+    sigmas[:,0] = np.sqrt(np.diag(v1))
+    sigmas[:,1] = np.sqrt(np.diag(v2))
+    
+    N_obj = 2 ## number of objectives
+    
+    
+    # ## Turn the problem into minimizing for all objectives:
+    # ### this is essential as the method works for minimizing
+    for i in range(goal.shape[0]):
+        means[:,i]=-1*means[:,i]
+        pareto[:,i]=-1*pareto[:,i]
+    
+    ## Sorting the non_dominated points considering the first objective
+    ##### It does not matter which objective to sort but lets do it with the
+    ##### 1st objective
+    I = np.argsort(pareto[:, 0])
+    pareto = pareto[I,:]
+    
+    ## Finding useless test points
+    ### this is done by checking if one is dominated with 95# certainty. (2 sigma)
+    ### so that if a test points has a very small probability to improve the
+    ### hypervolume, we discard it to avoid unnecessary EHVI calculations
+    
+    temp = means-2.*sigmas;
+    
+    ind = np.zeros((means.shape[0],1))
+    ehvi = np.zeros((means.shape[0],1))
+    
+    for i in range(means.shape[0]):
+        diff=pareto-temp[i,:]
+        for j in range(diff.shape[0]):
+            if np.max(diff[j,:])<0:
+                ind[i,0]=1;
+    
+    ## EHVI calculation for test points
+    for i in range(means.shape[0]):
+        if ind[i]==1:
+            ehvi[i,0]=0
+        else:
+            hvi = 0
+            box = 1
+            ### EHVI over the box from infinity to the ref point
+            for j in range(N_obj):
+                s = (ref[j]-means[i,j])/sigmas[i,j]
+                box = box*((ref[j]-means[i,j])*norm.cdf(s)+sigmas[i,j]*norm.pdf(s));
+
+            ### calculate how much adding a test point can improve the hypervolume
+            #         hvi = recursive(means(i,:),sigmas(i,:),ref,pareto);
+            
+            for zz in range(pareto.shape[0]-1):                
+                a = pareto[zz,:]
+                aa = np.maximum(pareto[zz,:],pareto[zz+1])
+                hvi_temp1=1
+                hvi_temp2=1
+                
+                for j in range(N_obj):
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (a[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp1 = hvi_temp1 * (up-low);
+
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (aa[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((aa[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp2 = hvi_temp2 * (up-low)
+                
+                
+                hvi = hvi + hvi_temp1 - hvi_temp2;
+            
+            a=pareto[-1,:]
+            hvi_temp1=1
+            for j in range(N_obj):
+                s_up = (ref[j]-means[j])/sigmas[j];
+                s_low = (a[j]-means[j])/sigmas[j];
+                up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up));
+                low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low));
+                hvi_temp1 = hvi_temp1 * (up-low);
+            hvi = hvi + hvi_temp1;
+            ehvi[i,0]=box-(hvi[0])
+
+    output[1] = np.max(ehvi)
+    output[2] = np.where(ehvi == np.max(ehvi))[0][0]
+    return output
+
+def fused_EHVI(param):
+    # means : GP mean estimation of objectives of the test points (fused means in
+    # multifidelity cases). Each column for 1 objective values
+    
+    # sigmas : uncertainty of GP mean estimations (std). Each column for 1 objective
+    
+    # goal : a row vector to define which objectives to be minimized or
+    # maximized. zero for minimizing and 1 for maximizing. Example: [ 0 0 1 0 ... ]
+    
+    # ref : hypervolume reference for calculations
+    
+    # pareto : Current true pareto front obtained so far
+    
+    ########### Note that in all variables, the order of columns should be the
+    ########### same. For example, the 1st column of all matrices above is
+    ########### related to the objective 1. Basically, each row = 1 design
+    ##########################################################################
+    with open("data/parameterSets/parameterSet{}".format(param[1]), 'rb') as f:
+        data = load(f)
+    with open("data/reificationObj", 'rb') as f:
+        model_temp = load(f)
+    (iteration, model_data, x_fused, fused_model_HP, \
+         kernel, x_test, curr_max, xi, sampleOpt) = data[param[0]]
+    # Create the fused model
+    model_temp[0].create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    model_temp[1].create_fused_GP(x_fused, fused_model_HP[1:], 
+                                fused_model_HP[0], 0.1, 
+                                kernel)
+    
+    # Initialize the output  
+    pareto, goal, ref = model_data
+    output = [0,0]
+        
+    means = np.zeros((x_test.shape[0], 2))
+    sigmas = np.zeros((x_test.shape[0], 2))
+    
+    m1, v1 = model_temp[0].predict_fused_GP(x_test)
+    m2, v2 = model_temp[1].predict_fused_GP(x_test)
+    
+    means[:,0] = m1
+    means[:,1] = m2
+    sigmas[:,0] = np.sqrt(np.diag(v1))
+    sigmas[:,1] = np.sqrt(np.diag(v2))
+    
+    N_obj = 2 ## number of objectives
+    
+    
+    # ## Turn the problem into minimizing for all objectives:
+    # ### this is essential as the method works for minimizing
+    for i in range(goal.shape[0]):
+        means[:,i]=-1*means[:,i]
+        pareto[:,i]=-1*pareto[:,i]
+
+    
+    ## Sorting the non_dominated points considering the first objective
+    ##### It does not matter which objective to sort but lets do it with the
+    ##### 1st objective
+    I = np.argsort(pareto[:, 0])
+    pareto = pareto[I,:]
+    
+    ## Finding useless test points
+    ### this is done by checking if one is dominated with 95# certainty. (2 sigma)
+    ### so that if a test points has a very small probability to improve the
+    ### hypervolume, we discard it to avoid unnecessary EHVI calculations
+    
+    temp = means-2.*sigmas;
+    
+    ind = np.zeros((means.shape[0],1))
+    ehvi = np.zeros((means.shape[0],1))
+    
+    for i in range(means.shape[0]):
+        diff=pareto-temp[i,:]
+        for j in range(diff.shape[0]):
+            if np.max(diff[j,:])<0:
+                ind[i,0]=1;
+    
+    ## EHVI calculation for test points
+    for i in range(means.shape[0]):
+        if ind[i]==1:
+            ehvi[i,0]=0
+        else:
+            hvi = 0
+            box = 1
+            ### EHVI over the box from infinity to the ref point
+            for j in range(N_obj):
+                s = (ref[j]-means[i,j])/sigmas[i,j]
+                box = box*((ref[j]-means[i,j])*norm.cdf(s)+sigmas[i,j]*norm.pdf(s));
+
+            ### calculate how much adding a test point can improve the hypervolume
+            #         hvi = recursive(means(i,:),sigmas(i,:),ref,pareto);
+            
+            for zz in range(pareto.shape[0]-1):                
+                a = pareto[zz,:]
+                aa = np.maximum(pareto[zz,:],pareto[zz+1])
+                hvi_temp1=1
+                hvi_temp2=1
+                
+                for j in range(N_obj):
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (a[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp1 = hvi_temp1 * (up-low);
+
+                    s_up = (ref[j]-means[j])/sigmas[j]
+                    s_low = (aa[j]-means[j])/sigmas[j]
+                    up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up))
+                    low = ((aa[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low))
+                    hvi_temp2 = hvi_temp2 * (up-low)
+                
+                
+                hvi = hvi + hvi_temp1 - hvi_temp2;
+            
+            a=pareto[-1,:]
+            hvi_temp1=1
+            for j in range(N_obj):
+                s_up = (ref[j]-means[j])/sigmas[j];
+                s_low = (a[j]-means[j])/sigmas[j];
+                up = ((ref[j]-means[j])*norm.cdf(s_up)+sigmas[j]*norm.pdf(s_up));
+                low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low));
+                hvi_temp1 = hvi_temp1 * (up-low);
+            hvi = hvi + hvi_temp1;
+            ehvi[i,0]=box-(hvi[0])
+
+    output[0] = np.max(ehvi)
+    output[1] = np.where(ehvi == np.max(ehvi))[0][0]
+    return output, x_test.shape[0]
 
 def storeObject(obj, filename):
     with open(filename, 'wb') as f:

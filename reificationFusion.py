@@ -9,6 +9,20 @@ import numpy as np
 from gpModel import gp_model
 import matplotlib.pyplot as plt
 
+
+
+# import logging
+# # create logger to output framework progress
+# logger = logging.getLogger("reifi")
+# logger.setLevel(logging.DEBUG)
+# sh = logging.StreamHandler()
+# sh.setLevel(logging.DEBUG)
+# # create formatter and add it to the handlers
+# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# sh.setFormatter(formatter)
+# # add the handler to the logger
+# logger.addHandler(sh)
+
 def reification(y,sig):    
     # This function takes lists of means and variances from multiple models and 
     # calculates the fused mean and variance following the Reification/Fusion approach
@@ -158,6 +172,8 @@ class model_reification():
         amd retrains the GP model
         """
         self.x_train[model_index] = np.vstack((self.x_train[model_index], new_x))
+        new_y = (new_y-self.model_mean[model_index])/self.model_std[model_index]
+        self.y_train[model_index] = np.insert(self.y_train[model_index], -1, 0)
         self.y_train[model_index] = np.append(self.y_train[model_index], new_y)
         self.gp_models[model_index].update(new_x, new_y, self.model_hp['sn'][model_index], False)
     
