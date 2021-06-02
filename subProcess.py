@@ -11,7 +11,7 @@ import numpy as np
 from sys import argv
 from time import sleep, time
 from multiprocessing import cpu_count
-from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_GPHedge, calculate_Greedy, calculate_PI, calculate_UCB
+from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_GPHedge, calculate_Greedy, calculate_PI, calculate_UCB, calculate_EHVI, fused_EHVI
 import logging
 
 if __name__ == "__main__":
@@ -72,11 +72,13 @@ if __name__ == "__main__":
                 elif control_param[2] == "Hedge":
                     function = calculate_GPHedge
                 elif control_param[2] == "Greedy":
-                    acqFunc = calculate_Greedy
+                    function = calculate_Greedy
                 elif control_param[2] == "PI":
-                    acqFunc = calculate_PI
+                    function = calculate_PI
                 elif control_param[2] == "UCB":
-                    acqFunc = calculate_UCB
+                    function = calculate_UCB
+                elif control_param[2] == "EHVI":
+                    function = calculate_EHVI
 
 
                 start = time()
@@ -114,9 +116,15 @@ if __name__ == "__main__":
                     else:
                         fused_output = []
                     count = 0
+                    
+                    if control_param[2] == "EHVI":
+                        func = fused_EHVI
+                    else:
+                        func = fused_calculate
+                    
                     # Calculations are conducted in parallel using the concurrent.futures appraoch
                     with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
-                        for result_from_process in zip(parameters, executor.map(fused_calculate,parameters)):
+                        for result_from_process in zip(parameters, executor.map(func,parameters)):
                             params, results = result_from_process
                             if control_param[2] == "Hedge":
                                 fused_out[0].append(results[0][0])

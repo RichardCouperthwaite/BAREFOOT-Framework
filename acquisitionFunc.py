@@ -345,9 +345,6 @@ def EHVI22(means,sigmas,goal,ref,pareto):
                 low = ((a[j]-means[j])*norm.cdf(s_low)+sigmas[j]*norm.pdf(s_low));
                 hvi_temp1 = hvi_temp1 * (up-low);
             hvi = hvi + hvi_temp1;
-            
-            print(box)
-            print(hvi)
             ehvi[i,0]=box-(hvi[0])
 
     return ehvi
