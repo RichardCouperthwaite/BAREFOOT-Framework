@@ -16,17 +16,17 @@ from pickle import load, dump
 from scipy.stats import norm
 
 
-# import logging
-# # create logger to output framework progress
-# logger = logging.getLogger("Util")
-# logger.setLevel(logging.DEBUG)
-# sh = logging.StreamHandler()
-# sh.setLevel(logging.DEBUG)
-# # create formatter and add it to the handlers
-# formatter = logging.Formatter('%(name)s - %(message)s')
-# sh.setFormatter(formatter)
-# # add the handler to the logger
-# logger.addHandler(sh)
+import logging
+# create logger to output framework progress
+strLog = logging.getLogger("StreamLog")
+strLog.setLevel(logging.DEBUG)
+sh = logging.StreamHandler()
+sh.setLevel(logging.DEBUG)
+# create formatter and add it to the handlers
+formatter = logging.Formatter('%(name)s - %(message)s')
+sh.setFormatter(formatter)
+# add the handler to the logger
+strLog.addHandler(sh)
 
 
 
@@ -67,6 +67,11 @@ def cartesian(*arrays):
     reshape = np.reshape(flat, (dim, elements)).T  # reshape and transpose
     return reshape
 
+def composition_sampler(ndim, nsamples):
+    X = lhs(ndim+1, nsamples)
+    X = -np.log(X)/(np.tile(np.sum(-np.log(X), axis=1), (X.shape[1],1)).transpose())
+    return X[:,0:ndim]
+
 def sampleDesignSpace(ndim, nsamples, sampleScheme):
     # This function provides three approaches to sampling of the design space
     # firstly, Latin hypercube sampling (LHS)
@@ -91,7 +96,9 @@ def sampleDesignSpace(ndim, nsamples, sampleScheme):
             x = dfInputs.sample(n=nsamples)
         else:
             x_other = pd.DataFrame(lhs(ndim, nsamples-dfInputs.shape[0]),columns=dfInputs.columns)
-            x = pd.concat((dfInputs, x_other))         
+            x = pd.concat((dfInputs, x_other))   
+    if sampleScheme == "CompFunc":
+        x = composition_sampler(ndim, nsamples)
     return np.array(x)
 
 def apply_constraints(samples, ndim, resolution=[], A=[], b=[], Aeq=[], beq=[], 
@@ -561,7 +568,13 @@ def fused_calculate(param):
     model_temp.create_fused_GP(x_fused, fused_model_HP[1:], 
                                 fused_model_HP[0], 0.1, 
                                 kernel)
+    
+    strLog.critical("X-Test Shape: {}".format(x_test.shape))
+    
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
+    
+    strLog.critical("Fused Mean Shape - {}".format(fused_mean.shape))
+    
     if sampleOpt == "TS":
         """
         Thompson sampling approach
@@ -1425,3 +1438,10 @@ def fused_EHVI(param):
 def storeObject(obj, filename):
     with open(filename, 'wb') as f:
         dump(obj, f)
+        
+        
+def checkInitInputs(*args, **kwargs):
+    pass
+
+def checkParameterInputs(*args, **kwargs):
+    pass

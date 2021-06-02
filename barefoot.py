@@ -23,8 +23,9 @@ from util import fused_EHVI, calculate_EHVI, Pareto_finder, storeObject
 from gpModel import gp_model
 from sklearn_extra.cluster import KMedoids
 import logging
+from pyDOE import lhs
 
-class barefoot():
+class barefoot():    
     def __init__(self, ROMModelList=[], TruthModel=[], calcInitData=True, 
                  initDataPathorNum=[], multiNode=0, workingDir=".", 
                  calculationName="Calculation", nDim=1, input_resolution=5, restore_calc=False,
@@ -32,12 +33,7 @@ class barefoot():
                  A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
                  verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT",
                  maximize=True, train_func=[], reification=True, batch=True, 
-                 multiObjective=False, multiObjectRef=[], temp_input="Max"):
-        
-        # this temp input can be used to adjust the performance of the framework temporarily
-        # Current use: Toggle between Max, Sum and Mean approaches for the GPHedge Calculations.
-        
-        self.temp_input = temp_input
+                 multiObjective=False, multiObjectRef=[]):
         
         """
         Python Class for Batch Reification/Fusion Optimization (BAREFOOT) Framework Calculations
@@ -66,7 +62,10 @@ class barefoot():
                              provided or retrieved from a save_state file. This can be used to restart a calculation
         updateROMafterTM   : This parameter allows the reduced order models to be retrained after getting more data
                              from the Truth Model. The model function calls do not change, so the training needs to 
-                             reflect in the same function.
+                             reflect in the same function. Requires a training function to be supplied in the 
+                             train_func input.
+        train_func         : Training function used to retrain the reduced order models after the Truth Model
+                             evaluations.
         externalTM         : In cases where it is necessary to evaluate the Truth Model separate to the
                              framework (for example, if the Truth Model is an actual experiment), this toggles
                              the output of the predicted points to a separate file for use externally. The
@@ -74,7 +73,8 @@ class barefoot():
                              the framework after the external Truth Model has been evaluated
         acquisitionFunc    : The acquisition function to use to evaluate the next best points for the reduced
                              order models. Currently the options are "KG" for Knowledge Gradient and "EI" for expected
-                             improvement.
+                             improvement, "PI" Probability of Improvment, "TS" Thompson sampling, "Greedy" Greedy,
+                             "UCB" Upper confidence bound, "Hedge" GP-Hedge Portfolio optimization.
         A, b, Aeq, beq     : Equality and inequality constraints according to the following equations:
                              1) A*x <= b
                              2) Aeq*x == b
@@ -84,6 +84,17 @@ class barefoot():
                              equal to the number of samples in the input matrix (x) with boolean values.
         keepSubRunning     : Determines whether the subprocesses are left running while calling the Truth Model
         verbose            : Determines the logging level for tracking the calculations.
+        input_resolution   : How many decimal places to use in the inputs.
+        sampleScheme       : Sampling scheme for the test points. Options are "Grid", "LHS", "Custom", "CompFunc".
+                             Where the Custom uses preselected test points from a file, and the CompFunc is
+                             specifically designed for sampling composition spaces.
+        tmSampleOpt        : The acquisition function to use when evaluating next-best points for the Truth Model
+        logname            : The name of the log file
+        maximize           : Toggles if the problem is a maximization or minimization problem. Default is Maximization.
+        reification        : Toggles the use of the multi-fidelity Reification approach
+        batch              : Toggles the use of the Batch BO approach
+        multiObjective     : Toggles multi-objective optimization
+        multiObjectRef     : Holds the reference point required by the EHVI acquisition function
                              
         """
         if verbose:
@@ -102,8 +113,9 @@ class barefoot():
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         fh.setFormatter(formatter)
         # add the handler to the logger
-        self.logger.addHandler(fh)
-        
+        self.logger.addHandler(fh)     
+        with open(f"{logname}.log", 'w') as f:
+            pass
         
         self.logger.info("#########################################################")
         self.logger.info("#                                                       #")
@@ -211,6 +223,8 @@ class barefoot():
             self.logger.debug("Calculation Results Directory [{}] Already Exists".format(self.calculationName))
         # If using subprocesses, create the folder structure needed
         if self.multinode != 0:
+            with open("BAREFOOT.log", 'w') as f:
+                pass
             if os.path.exists('{}/subprocess'.format(self.workingDir)):
                 rmtree('{}/subprocess'.format(self.workingDir))
                 self.logger.debug("Existing Subprocess Directory Removed")
@@ -233,7 +247,7 @@ class barefoot():
         if self.multiObjective:
             labels1 = ["Model Index", "Iteration", "y1", "y2"]
         else:
-            labels1 = ["Model Index", "Iteration", "y1"]
+            labels1 = ["Model Index", "Iteration", "y"]
         for ii in range(self.nDim):
             labels1.append("x{}".format(ii))
             if self.multiObjective:
@@ -263,6 +277,9 @@ class barefoot():
         if self.acquisitionFunc == "Hedge" or self.tmSampleOpt == "Hedge":
             with open('{}/results/{}/hedgeRecord'.format(self.workingDir, self.calculationName), 'wb') as f:
                 dump(hedge_out, f)
+        if self.multiObjective:
+            with open('{}/results/{}/paretoRecord{}'.format(self.workingDir, self.calculationName, self.currentIteration), 'wb') as f:
+                dump(self.pareto, f)
         self.logger.info("Dataframes Pickled and Dumped to Results Directory")
             
     def __save_calculation_state(self):
@@ -465,10 +482,10 @@ class barefoot():
                 data = load(f)
             
             # extract data from dictionary in file and assign to correct variables
-            self.TMInitOutput = data["TMInitOutput"]
+            self.TMInitOutput = self.goal*data["TMInitOutput"]
             self.TMInitInput = data["TMInitInput"]
             if self.reification:
-                self.ROMInitOutput = data["ROMInitOutput"]
+                self.ROMInitOutput = self.goal*data["ROMInitOutput"]
                 self.ROMInitInput = data["ROMInitInput"]
             
             ROMSize = 0
@@ -489,9 +506,9 @@ class barefoot():
                     for jj in range(self.ROMInitOutput[ii].shape[0]):
                         temp_x[ind,:] = self.ROMInitInput[ii][jj,:]
                         if self.multiObjective:
-                            temp_y[ind,:] = self.ROMInitOutput[ii][jj,:]
+                            temp_y[ind,:] = self.goal*self.ROMInitOutput[ii][jj,:]
                         else:
-                            temp_y[ind] = self.ROMInitOutput[ii][jj]
+                            temp_y[ind] = self.goal*self.ROMInitOutput[ii][jj]
                         temp_index[ind] = ii
                         ind += 1
                     count.append(self.ROMInitInput[ii].shape[0])
@@ -521,15 +538,15 @@ class barefoot():
     def initialize_parameters(self, modelParam, covFunc="M32", iterLimit=100,  
                               sampleCount=50, hpCount=100, batchSize=5, 
                               tmIter=1e6, totalBudget=1e16, tmBudget=1e16, 
-                              upperBound=1, lowBound=0.0001, fusedPoints=5, 
-                              fusedHP=[]):
+                              upperBound=1, lowBound=0.0001, fusedPoints=500, 
+                              fusedHP=[], fusedSamples=10000):
         """
         This function sets the conditions for the barefoot framework calculations.
         All parameters have default values except the model parameters.
 
         Parameters
         ----------
-        modelParam : TYPE
+        modelParam : dictionary
             This must be a dictionary with the hyperparameters for the reduced
             order models as well as the costs for all the models. The specific
             values in the dictionary must be:
@@ -552,41 +569,43 @@ class barefoot():
                 'err_sn': A list with the noise variance for each discrepancy GP.
                 'costs': The model costs, including the Truth Model
                          eg. 2 ROM : [model 1 cost, model 2 cost, Truth model cost]
-        covFunc : TYPE, optional
+        covFunc : String, optional
             The covariance function to used for the Gaussian Process models.
             Options are Squared Exponential ("SE") Matern 3/2 ("M32") and 
             Matern 5/2 ("M52"). The default is "M32".
-        iterLimit : TYPE, optional
+        iterLimit : Int, optional
             How many iterations to run the framework calculation before
             terminating. The default is 100.
-        sampleCount : TYPE, optional
+        sampleCount : Int, optional
             The number of samples to use for the acquisition function calculations.
             The default is 50.
-        hpCount : TYPE, optional
+        hpCount : Int, optional
             The number of hyperparameter sets to use. The default is 100.
-        batchSize : TYPE, optional
+        batchSize : Int, optional
             The batch size for the model evaluations. The default is 5.
-        tmIter : TYPE, optional
+        tmIter : Int, optional
             The number of iterations to complete before querying the Truth Model. 
             The default is 1e6.
-        totalBudget : TYPE, optional
+        totalBudget : Int/Float, optional
             The total time budget to expend before terminating the calculation. 
             The default is 1e16.
-        tmBudget : TYPE, optional
+        tmBudget : Int/Float, optional
             The budget to expend before querying the Truth Model. The default 
             is 1e16.
-        upperBound : TYPE, optional
+        upperBound : Float, optional
             The upper bound for the hyperparameters. The default is 1.
-        lowBound : TYPE, optional
+        lowBound : Float, optional
             The lower bound for the hyperparameters. The default is 0.0001.
-        fusedPoints : TYPE, optional
-            The number of points per dimension for the linear grid used to 
+        fusedPoints : Int, optional
+            The number of points to sample from a LHS sampler at which to 
             evaluate the fused mean and variance for building the fused model. 
-            The default is 5.
-
-        Returns
-        -------
-        None.
+            The default is 500.
+        fusedHP : List, optional
+            Holds the hyperparameters for the fused model if the approach does not
+            use the Batch approach
+        fusedSamples : Int, optional
+            The number of samples to take from the design space for evaluating the fused
+            model for determining next-best points from the Truth model.
 
         """
         self.logger.debug("Start Initializing Reification Object Parameters")
@@ -603,6 +622,7 @@ class barefoot():
         self.modelParam = modelParam
         self.modelCosts = modelParam["costs"]
         self.fusedHP = fusedHP
+        self.fusedSamples = fusedSamples
         # The numpy linspace module will contract the distance below 1 if there
         # are also values above 1. The approach implemented here avoids that
         # situation
@@ -621,11 +641,21 @@ class barefoot():
                 self.fusedModelHP[i,j] = all_HP[np.random.randint(0,all_HP.shape[0])]
         # create the evaluation points for determining the fused mean and
         # variance
-        temp = np.linspace(0,1,num=fusedPoints)
-        arr_list = []
-        for ii in range(self.nDim):
-            arr_list.append(temp)
-        self.xFused = cartesian(*arr_list)
+        sampleSize = fusedPoints
+        if self.sampleScheme == "CompFunc":
+            sampleOption = "CompFunc"
+        else:
+            sampleOption = "LHS"
+        self.xFused, check = apply_constraints(sampleSize, 
+                                          self.nDim, self.res,
+                                          self.A, self.b, self.Aeq, self.beq, 
+                                          self.lb, self.ub, self.constr_func,
+                                          sampleOption, opt_sample_size=False)
+        if check:
+            self.logger.debug("Fused Points - All constraints applied successfully {}/{}".format(self.xFused.shape[0], sampleSize))
+        else:
+            self.logger.critical("Fused Points - Sample Size NOT met due to constraints! Continue with {}/{} Samples".format(self.xFused.shape[0], sampleSize))
+            
         if not self.restore_calc:
             self.logger.debug("Create Reification Object")
             if self.multiObjective:
@@ -1251,8 +1281,7 @@ class barefoot():
                     results = self.goal*results
                     temp_y[par["ParamIndex"],:] = results
                 else:
-                    if not self.maximize:
-                        results = (-1)*results
+                    results = self.goal*results
                     temp_y[par["ParamIndex"]] = results
                 temp_x[par["ParamIndex"],:] = par["Input Values"]
                 temp_index[par["ParamIndex"]] = par["Model Index"]
@@ -1304,11 +1333,10 @@ class barefoot():
                 if results_evaluate:
                     if self.multiObjective:
                         results = self.goal*results
-                        temp_y[par["ParamIndex"],:] = self.goal*results
+                        temp_y[par["ParamIndex"],:] = results
                     else:
-                        if not self.maximize:
-                            results = (-1)*results
-                            temp_y[par["ParamIndex"]] = results
+                        results = self.goal*results
+                        temp_y[par["ParamIndex"]] = results
                     temp_x[par["ParamIndex"],:] = par["Input Values"]
                     temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
@@ -1445,14 +1473,14 @@ class barefoot():
                     # Mean of output
                     mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
                     self.gpHedgeHist[ii].append(np.max(mean_output))
-                elif self.temp_input == "Max":
-                    # Max of output
-                    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHist[ii].append(np.max(mean_output))
-                elif self.temp_input == "Sum":
-                    # Sum of output
-                    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHist[ii].append(np.max(mean_output))
+                #elif self.temp_input == "Max":
+                #    # Max of output
+                #    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
+                #    self.gpHedgeHist[ii].append(np.max(mean_output))
+                #elif self.temp_input == "Sum":
+                #    # Sum of output
+                #    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
+                #    self.gpHedgeHist[ii].append(np.max(mean_output))
                 
                 if len(self.gpHedgeHist[ii]) > 2*self.tmIterLim:
                     self.gpHedgeHist[ii] = self.gpHedgeHist[ii][1:]
@@ -1464,14 +1492,14 @@ class barefoot():
                     # Mean of output
                     mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
                     self.gpHedgeHistTM[ii].append(np.max(mean_output))
-                elif self.temp_input == "Max":
-                    # Max of output
-                    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHistTM[ii].append(np.max(mean_output))
-                elif self.temp_input == "Sum":
-                    # Sum of output
-                    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHistTM[ii].append(np.max(mean_output))
+                #elif self.temp_input == "Max":
+                #    # Max of output
+                #    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
+                #    self.gpHedgeHistTM[ii].append(np.max(mean_output))
+                #elif self.temp_input == "Sum":
+                #    # Sum of output
+                #    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
+                #    self.gpHedgeHistTM[ii].append(np.max(mean_output))
                     
                 if len(self.gpHedgeHistTM[ii]) > 2*self.tmIterLim:
                     self.gpHedgeHistTM[ii] = self.gpHedgeHistTM[ii][1:]
@@ -1607,7 +1635,6 @@ class barefoot():
                                               self.lb, self.ub, self.constr_func,
                                               self.sampleScheme,True,evalP)
                 
-                
                 # If constraints can't be satisfied, notify the user in the log
                 if check:
                     self.logger.debug("ROM - All constraints applied successfully {}/{}".format(x_test.shape[0], self.sampleCount))
@@ -1638,7 +1665,6 @@ class barefoot():
                             new_mean.append(new)
                     else:
                         new_mean, var = self.modelGP.predict_var(x_test)
-                    
                 # Calculate the Acquisition Function for each of the test points in each
                 # model for each set of hyperparameters
                 
@@ -1658,6 +1684,7 @@ class barefoot():
                 
                 # Call the reduced order models
                 temp_x, temp_y, temp_index, costs, count = self.__call_ROM(medoid_out, x_test[medoid_out[:,2].astype(int),:])
+                
                 self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
                 
                 if self.acquisitionFunc == "Hedge":
@@ -1673,10 +1700,12 @@ class barefoot():
                     evalP = [np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==-1,self.inputLabels])]
                     
                     # create a test set that is dependent on the number of dimensions            
-                    tm_test, check = apply_constraints(int(40000/(self.nDim*self.nDim)), 
+                    tm_test, check = apply_constraints(self.fusedSamples, 
                                               self.nDim, self.res,
                                               self.A, self.b, self.Aeq, self.beq, 
-                                              self.lb, self.ub, self.constr_func, "LHS", False, evalP)
+                                              self.lb, self.ub, self.constr_func, "LHS", True, evalP)
+                    
+                    print("#####################", tm_test.shape)
 
                     if check:
                         self.logger.debug("Truth Model Query - All constraints applied successfully")
@@ -2106,7 +2135,7 @@ class barefoot():
         # all the evaluated points and reconstructs the reification object with
         # the new values.
         
-        self.train_func()
+        self.train_func("results/{}/".format(self.calculationName))
         
         self.logger.info("Recalculate all evaluated points for ROM to ensure correct model results are used")
         self.ROMInitInput = []
@@ -2114,23 +2143,35 @@ class barefoot():
         TMDataX = self.reificationObj.x_true
         TMDataY = self.reificationObj.y_true
         params = []
+        params_truth = []
         count = []
         param_index = 0
-        # obtain the parameters for the evaluations
-        for ii in range(len(self.ROM)):
+        modelIter_record = []
+        for jj in range(len(self.ROM)+1):
             count.append(0)
-            for jj in range(self.initDataPathorNum[ii]):
-                params.append({"Model Index":ii,
-                               "Model":self.ROM[ii],
-                               "Input Values":self.reificationObj.x_train[ii][jj,:],
+        for jj in range(self.evaluatedPoints.shape[0]):
+            modelIter_record.append([self.evaluatedPoints.loc[jj,"Model Index"], self.evaluatedPoints.loc[jj,"Iteration"]])
+            if self.evaluatedPoints.loc[jj,"Model Index"] != -1:
+                params.append({"Model Index":self.evaluatedPoints.loc[jj,"Model Index"],
+                               "Model":self.ROM[self.evaluatedPoints.loc[jj,"Model Index"]],
+                               "Input Values":self.evaluatedPoints.loc[jj,self.inputLabels],
                                "ParamIndex":param_index})
-                param_index += 1
+            else:
+                count[-1] += 1
+                params_truth.append({"Model Index":-1,
+                               "Model":self.TM,
+                               "Input Values":self.evaluatedPoints.loc[jj,self.inputLabels],
+                               "ParamIndex":param_index,
+                               "Evaluation": self.evaluatedPoints.loc[jj,"y"]})
+            param_index += 1
+        for ii in range(len(self.ROM)):
             self.ROMInitInput.append(np.zeros_like(self.reificationObj.x_train[ii]))
             self.ROMInitOutput.append(np.zeros_like(self.reificationObj.y_train[ii]))
             
-        temp_x = np.zeros((len(params), self.nDim))
-        temp_y = np.zeros(len(params))
-        temp_index = np.zeros(len(params))
+        temp_x = np.zeros((len(modelIter_record), self.nDim))
+        temp_y = np.zeros(len(modelIter_record))
+        temp_index = np.zeros(len(modelIter_record))
+        temp_iter = np.array(modelIter_record)
         
         # Run the evaluations concurrently and store the outputs                    
         with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
@@ -2143,6 +2184,10 @@ class barefoot():
                     temp_y[par["ParamIndex"]] = results
                     temp_index[par["ParamIndex"]] = par["Model Index"]
                     count[par["Model Index"]] += 1
+        for pp in range(len(params_truth)):
+            temp_x[params_truth[pp]["ParamIndex"]] = params_truth[pp]["Input Values"]
+            temp_y[params_truth[pp]["ParamIndex"]] = params_truth[pp]["Evaluation"]
+            temp_index[params_truth[pp]["ParamIndex"]] = -1
         self.logger.info("Create New Reification Object")
         # Recreate the reification object for further calculations
         self.reificationObj = model_reification(self.ROMInitInput, self.ROMInitOutput, 
@@ -2157,11 +2202,17 @@ class barefoot():
                                           TMDataX, TMDataY, 
                                           len(self.ROM), self.nDim, self.covFunc)
         # save the new data
-        self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+        # Adds new data points to the evaluated datapoints dataframe
+        temp = np.zeros((temp_x.shape[0], self.nDim+3))
+        temp[:,0] = temp_index
+        temp[:,1] = temp_iter
+        temp[:,2] = temp_y
+        temp[:,3:] = temp_x
+        temp = pd.DataFrame(temp, columns=self.evaluatedPoints.columns)
+        self.evaluatedPoints = temp
         self.__add_to_iterationData(time()-self.timeCheck, np.array(count))
         self.timeCheck = time()
         self.logger.info("New Evaluations Saved | Reification Object Updated")
-        pass
     
     
     
@@ -2210,8 +2261,7 @@ class barefoot():
         # data saved to the normal framework outputs
         self.logger.info("Truth Model Evaluations Loaded")
         self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
-        if not self.maximize:
-            temp_y = (-1)*temp_y
+        temp_y = self.goal*temp_y
         self.reificationObj.update_truth(temp_x, temp_y)
         self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
         
