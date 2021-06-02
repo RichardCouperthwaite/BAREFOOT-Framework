@@ -41,6 +41,8 @@ The framework is initialized in a two stage process. The first sets up the frame
 * train_func : When training the reduced order models after the Truth Model queries, it is necessary to include this function that will actually do the training.
 * reification : Boolean parameter that toggles whether the framework will use the reification approach or not. Defaults to True.
 * batch : Boolean parameter that toggles the batch approach in the framework. Defaults to True.
+* multiObjective : Toggles multi-objective optimization
+* multiObjectRef : Holds the reference point required by the EHVI acquisition function
 
 The second stage sets up the specific calculation required:
 
@@ -57,6 +59,7 @@ The second stage sets up the specific calculation required:
 * lowBound : The lower bound of the hypeparameter values.
 * fusedPoints : The number of points per dimension to use when constructing the Fused GP. Points for evaluating the Fused GP are sampled linearly for each dimension, creating a grid of points to evaluate the fused mean and variance.
 * fusedHP : When using the calculations with only the reification approach, and not the batch approach, it is necessary to provide hyperparmeters to use with the fused model GP. This parameter is a list of these parameters with the following format: [signal variance, length scale 1, ..., length scale n].
+* fusedSamples : The number of samples to take from the design space for evaluating the fused model for determining next-best points from the Truth model.
 
 ## Example Code
 The sample_code.py file has sample code that demonstrates many of the features of the framework, and also demonstrates how to construct initial data files, and subprocess batch files. There are three code options that can be run in the sample_code.py file:
