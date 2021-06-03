@@ -178,7 +178,7 @@ class barefoot():
             self.Aeq = Aeq
             self.beq = beq
             self.ub = ub
-            self.lb = ub
+            self.lb = lb
             self.constr_func = func
             self.train_func = train_func
             if sampleScheme in ["LHS", "Grid", "Custom"]:
