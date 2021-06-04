@@ -1705,8 +1705,6 @@ class barefoot():
                                               self.A, self.b, self.Aeq, self.beq, 
                                               self.lb, self.ub, self.constr_func, "LHS", True, evalP)
                     
-                    print("#####################", tm_test.shape)
-
                     if check:
                         self.logger.debug("Truth Model Query - All constraints applied successfully")
                     else:
