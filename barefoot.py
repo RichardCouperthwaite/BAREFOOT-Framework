@@ -480,12 +480,12 @@ class barefoot():
             self.logger.debug("Start Loading Initial Data from Files")
             with open(self.initDataPathorNum, 'rb') as f:
                 data = load(f)
-            
+
             # extract data from dictionary in file and assign to correct variables
-            self.TMInitOutput = self.goal*data["TMInitOutput"]
+            self.TMInitOutput = data["TMInitOutput"]
             self.TMInitInput = data["TMInitInput"]
             if self.reification:
-                self.ROMInitOutput = self.goal*data["ROMInitOutput"]
+                self.ROMInitOutput = data["ROMInitOutput"]
                 self.ROMInitInput = data["ROMInitInput"]
             
             ROMSize = 0
@@ -515,7 +515,7 @@ class barefoot():
             for jj in range(self.TMInitOutput.shape[0]):
                 temp_x[ind,:] = self.TMInitInput[jj,:]
                 if self.multiObjective:
-                    temp_y[ind,:] = self.TMInitOutput[jj,:]
+                    temp_y[ind,:] = self.goal*self.TMInitOutput[jj,:]
                     if np.max(temp_y[0,0]) > self.maxTM[0]:
                         self.maxTM[0] = np.max(temp_y[0,0])
                     if np.max(temp_y[0,1]) > self.maxTM[1]:
