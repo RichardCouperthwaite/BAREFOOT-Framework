@@ -1469,38 +1469,16 @@ class barefoot():
         # update the gain for each acquisition function for either the ROM or TM
         if models == "ROM":
             for ii in range(6):
-                if self.temp_input == "Mean":
-                    # Mean of output
-                    mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHist[ii].append(np.max(mean_output))
-                #elif self.temp_input == "Max":
-                #    # Max of output
-                #    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
-                #    self.gpHedgeHist[ii].append(np.max(mean_output))
-                #elif self.temp_input == "Sum":
-                #    # Sum of output
-                #    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
-                #    self.gpHedgeHist[ii].append(np.max(mean_output))
-                
+                mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
+                self.gpHedgeHist[ii].append(np.max(mean_output))                
                 if len(self.gpHedgeHist[ii]) > 2*self.tmIterLim:
                     self.gpHedgeHist[ii] = self.gpHedgeHist[ii][1:]
                     
             self.gpHedgeProb = np.sum(self.gpHedgeHist, axis=1)
         elif models == "TM":
             for ii in range(6):
-                if self.temp_input == "Mean":
-                    # Mean of output
-                    mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
-                    self.gpHedgeHistTM[ii].append(np.max(mean_output))
-                #elif self.temp_input == "Max":
-                #    # Max of output
-                #    mean_output = np.max(np.array(fused_output[ii]).transpose(), axis=1)
-                #    self.gpHedgeHistTM[ii].append(np.max(mean_output))
-                #elif self.temp_input == "Sum":
-                #    # Sum of output
-                #    mean_output = np.sum(np.array(fused_output[ii]).transpose(), axis=1)
-                #    self.gpHedgeHistTM[ii].append(np.max(mean_output))
-                    
+                mean_output = np.mean(np.array(fused_output[ii]).transpose(), axis=1)
+                self.gpHedgeHistTM[ii].append(np.max(mean_output))
                 if len(self.gpHedgeHistTM[ii]) > 2*self.tmIterLim:
                     self.gpHedgeHistTM[ii] = self.gpHedgeHistTM[ii][1:]
                     
