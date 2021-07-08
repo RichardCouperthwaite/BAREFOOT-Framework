@@ -24,6 +24,7 @@ from gpModel import gp_model
 from sklearn_extra.cluster import KMedoids
 import logging
 from pyDOE import lhs
+from ray.util.multiprocessing import Pool
 
 class barefoot():    
     def __init__(self, ROMModelList=[], TruthModel=[], calcInitData=True, 
@@ -139,6 +140,7 @@ class barefoot():
             self.logger.info("Previous Save State Restored")
         else:
             self.restore_calc = restore_calc
+            self.pool = Pool()
             self.timeCheck = time()
             self.multiObjective = multiObjective
             self.MORef = multiObjectRef
@@ -181,7 +183,7 @@ class barefoot():
             self.lb = lb
             self.constr_func = func
             self.train_func = train_func
-            if sampleScheme in ["LHS", "Grid", "Custom"]:
+            if sampleScheme in ["LHS", "Grid", "Custom", "CompFunc"]:
                 self.sampleScheme = sampleScheme
             else:
                 self.sampleScheme = "LHS"
@@ -196,6 +198,21 @@ class barefoot():
             self.__get_initial_data__()
             self.logger.info("Initialization Completed")  
         
+    def __catch_error(func):
+        """
+        If an error occurs during the initialization of the framework this decorator will catch
+        that error
+        """
+        def close_subs(self, *args, **kwargs):
+            no_error = False
+            try:
+                func(self, *args, **kwargs)
+                no_error = True
+            except Exception as err:
+                self.logger.critical("Initialization Code Failed - See Error Below")
+                self.logger.exception(err)
+            return no_error
+        return close_subs
     
     def __create_dir_and_files(self):
         # Create the required directories for saving the results and the subprocess
@@ -345,6 +362,7 @@ class barefoot():
         self.iterationData = pd.concat([self.iterationData,temp])
         self.logger.debug("Iteration {} Data saved to Dataframe".format(self.currentIteration))
         
+    @__catch_error
     def __get_initial_data__(self):
         # Function for obtaining the initial data either by calculation or by 
         # extracting the data from a file.
@@ -394,13 +412,13 @@ class barefoot():
                     initInput, check = apply_constraints(self.initDataPathorNum[ii], 
                                                          self.nDim, self.res,
                                                           self.A, self.b, self.Aeq, self.beq, 
-                                                          self.lb, self.ub, self.constr_func)
+                                                          self.lb, self.ub, self.constr_func, self.sampleScheme)
                     if check:
-                        self.logger.debug("Initial Data - All constraints applied successfully")
+                        self.logger.debug("ROM {} - Initial Data - All constraints applied successfully".format(ii))
                     else:
-                        self.logger.critical("Initial Data - Some or All Constraints Could not Be applied! Continuing Without Constraints")
+                        self.logger.critical("ROM {} - Initial Data - Some or All Constraints Could not Be applied! Continuing With {}/{}".format(ii, initInput.shape[0], self.initDataPathorNum[ii]))
                     
-                    for jj in range(self.initDataPathorNum[ii]):
+                    for jj in range(initInput.shape[0]):
                         params.append({"Model Index":ii,
                                        "Model":self.ROM[ii],
                                        "Input Values":initInput[jj,:],
@@ -408,20 +426,20 @@ class barefoot():
                         param_index += 1
                     self.ROMInitInput.append(np.zeros_like(initInput))
                     if self.multiObjective:
-                        self.ROMInitOutput.append(np.zeros((self.initDataPathorNum[ii],2)))
+                        self.ROMInitOutput.append(np.zeros((initInput.shape[0],2)))
                     else:
-                        self.ROMInitOutput.append(np.zeros(self.initDataPathorNum[ii]))
+                        self.ROMInitOutput.append(np.zeros(initInput.shape[0]))
             # Obtain LHS initial data for Truth Model
             initInput, check = apply_constraints(self.initDataPathorNum[-1], 
                                                      self.nDim, self.res,
                                                       self.A, self.b, self.Aeq, self.beq, 
-                                                      self.lb, self.ub, self.constr_func)
+                                                      self.lb, self.ub, self.constr_func, self.sampleScheme)
             count.append(0)
             if check:
-                self.logger.debug("Initial Data - All constraints applied successfully")
+                self.logger.debug("TM - Initial Data - All constraints applied successfully")
             else:
-                self.logger.critical("Initial Data - Some or All Constraints Could not Be applied! Continuing Without Constraints")
-            for jj in range(self.initDataPathorNum[-1]):
+                self.logger.critical("TM - Initial Data - Some or All Constraints Could not Be applied! Continuing With {}/{}".format(initInput.shape[0], self.initDataPathorNum[-1]))
+            for jj in range(initInput.shape[0]):
                 params.append({"Model Index":-1,
                                "Model":self.TM,
                                "Input Values":initInput[jj,:],
@@ -429,9 +447,9 @@ class barefoot():
                 param_index += 1
             self.TMInitInput = np.zeros_like(initInput)
             if self.multiObjective:
-                self.TMInitOutput = np.zeros((self.initDataPathorNum[-1],2))
+                self.TMInitOutput = np.zeros((initInput.shape[0],2))
             else:
-                self.TMInitOutput = np.zeros(self.initDataPathorNum[-1])
+                self.TMInitOutput = np.zeros(initInput.shape[0])
             
             # Calculate all the initial data in parallel
             temp_x = np.zeros((len(params), self.nDim))
@@ -440,41 +458,52 @@ class barefoot():
             else:
                 temp_y = np.zeros(len(params))
             temp_index = np.zeros(len(params))
+            pass_calculations = []
             self.logger.debug("Parameters Defined. Starting Concurrent.Futures Calculation")
-            with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+            self.pool.terminate()
+            self.pool = Pool()
+            with self.pool as executor:
                 for result_from_process in zip(params, executor.map(call_model, params)):
-                    par, results = result_from_process
-                    if par["Model Index"] != -1:                        
-                        self.ROMInitInput[par["Model Index"]][count[par["Model Index"]],:] = par["Input Values"]
-                        if self.multiObjective:
-                            self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = np.tile(self.goal, (results.shape[0]))*results
+                    par, results = result_from_process 
+                    if type(results) != bool:
+                        if par["Model Index"] != -1:                        
+                            self.ROMInitInput[par["Model Index"]][count[par["Model Index"]],:] = par["Input Values"]
+                            if self.multiObjective:
+                                self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = np.tile(self.goal, (results.shape[0]))*results
+                            else:
+                                self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = self.goal*results
+                            temp_x[par["ParamIndex"],:] = par["Input Values"]
+                            if self.multiObjective:
+                                temp_y[par["ParamIndex"],:] = self.goal*results
+                            else:
+                                temp_y[par["ParamIndex"]] = self.goal*results
+                            temp_index[par["ParamIndex"]] = par["Model Index"]
                         else:
-                            self.ROMInitOutput[par["Model Index"]][count[par["Model Index"]]] = self.goal*results
-                        temp_x[par["ParamIndex"],:] = par["Input Values"]
-                        if self.multiObjective:
-                            temp_y[par["ParamIndex"],:] = self.goal*results
-                        else:
-                            temp_y[par["ParamIndex"]] = self.goal*results
-                        temp_index[par["ParamIndex"]] = par["Model Index"]
-                    else:
-                        self.TMInitInput[count[par["Model Index"]],:] = par["Input Values"]
-                        self.TMInitOutput[count[par["Model Index"]]] = self.goal*results
-                        if self.multiObjective:
-                            if np.max(results[0,0]) > self.maxTM[0]:
-                                self.maxTM[0] = np.max(results[0,0])
-                            if np.max(results[0,1]) > self.maxTM[1]:
-                                self.maxTM[1] = np.max(results[0,1])
-                        else:
-                            if np.max(results) > self.maxTM:
-                                self.maxTM = np.max(results)
-                        temp_x[par["ParamIndex"],:] = par["Input Values"]
-                        if self.multiObjective:
-                            temp_y[par["ParamIndex"],:] = self.goal*results
-                        else:
-                            temp_y[par["ParamIndex"]] = self.goal*results
-                        temp_index[par["ParamIndex"]] = par["Model Index"]
-                    count[par["Model Index"]] += 1
+                            self.TMInitInput[count[par["Model Index"]],:] = par["Input Values"]
+                            self.TMInitOutput[count[par["Model Index"]]] = self.goal*results
+                            if self.multiObjective:
+                                if results[0,0] > self.maxTM[0]:
+                                    self.maxTM[0] = results[0,0]
+                                if results[0,1] > self.maxTM[1]:
+                                    self.maxTM[1] = results[0,1]
+                            else:
+                                if np.max(results) > self.maxTM:
+                                    self.maxTM = np.max(results)
+                            temp_x[par["ParamIndex"],:] = par["Input Values"]
+                            if self.multiObjective:
+                                temp_y[par["ParamIndex"],:] = self.goal*results
+                            else:
+                                temp_y[par["ParamIndex"]] = self.goal*results
+                            temp_index[par["ParamIndex"]] = par["Model Index"]
+                        count[par["Model Index"]] += 1
+                        pass_calculations.append(par["ParamIndex"])
             self.logger.debug("Concurrent.Futures Calculation Completed")
+            if self.multiObjective:
+                temp_y = temp_y[pass_calculations,:]
+            else:
+                temp_y = temp_y[pass_calculations]
+            temp_x = temp_x[pass_calculations,:]
+            temp_index = temp_index[pass_calculations]
         else:
             # extract the initial data from the file
             self.logger.debug("Start Loading Initial Data from Files")
@@ -535,6 +564,7 @@ class barefoot():
         self.logger.debug("Initial Data Saved to Dataframes")
         self.timeCheck = time()
     
+    @__catch_error
     def initialize_parameters(self, modelParam, covFunc="M32", iterLimit=100,  
                               sampleCount=50, hpCount=100, batchSize=5, 
                               tmIter=1e6, totalBudget=1e16, tmBudget=1e16, 
@@ -1008,7 +1038,9 @@ class barefoot():
         kg_output = []
         # Start the concurrent calculations and return the output array
         self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        self.pool.terminate()
+        self.pool = Pool()
+        with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(acqFunc,parameters)):
                 params, results = result_from_process
                 kg_output.append(results)
@@ -1204,7 +1236,9 @@ class barefoot():
             func = fused_calculate
         
         # Run the concurrent processes and save the outputs
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        self.pool.terminate()
+        self.pool = Pool()
+        with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(func,parameters)):
                 params, results = result_from_process
                 if self.tmSampleOpt == "Hedge":
@@ -1271,7 +1305,9 @@ class barefoot():
         costs = np.zeros(len(params))
         # Run the concurrent calculations and extract the results
         self.logger.info("Start ROM Function Evaluations | {} Calculations".format(len(params)))
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        self.pool.terminate()
+        self.pool = Pool()
+        with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
                 if len(results.shape) == 1:
@@ -1308,7 +1344,9 @@ class barefoot():
         passed_calcs = []
         # Run the concurrent calculations and extract the results
         self.logger.info("Start Truth Model Evaluations | {} Sets".format(len(params)))
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        self.pool.terminate()
+        self.pool = Pool()
+        with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
                 if len(results.shape) == 1:
@@ -1460,7 +1498,9 @@ class barefoot():
         # run all the calculations concurrently and obtain the outputs
         fused_output = [[],[],[],[],[],[]]
         count = 0
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        self.pool.terminate()
+        self.pool = Pool()
+        with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(evaluateFusedModel,parameters)):
                 params, results = result_from_process
                 fused_output[results[0]].append(results[1])
@@ -1858,7 +1898,9 @@ class barefoot():
                 kg_output = []
             # Start the concurrent calculations and return the output array
             self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
-            with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+            self.pool.terminate()
+            self.pool = Pool()
+            with self.pool as executor:
                 for result_from_process in zip(parameters, executor.map(batchAcquisitionFunc,parameters)):
                     params, results = result_from_process
                     
@@ -2149,8 +2191,10 @@ class barefoot():
         temp_index = np.zeros(len(modelIter_record))
         temp_iter = np.array(modelIter_record)
         
-        # Run the evaluations concurrently and store the outputs                    
-        with concurrent.futures.ProcessPoolExecutor(cpu_count()) as executor:
+        # Run the evaluations concurrently and store the outputs         
+        self.pool.terminate()
+        self.pool = Pool()      
+        with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
                 if par["Model Index"] != -1:
