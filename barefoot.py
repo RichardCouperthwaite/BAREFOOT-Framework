@@ -24,6 +24,11 @@ from gpModel import gp_model
 from sklearn_extra.cluster import KMedoids
 import logging
 from pyDOE import lhs
+
+# import concurrent.futures
+# def Pool():
+#     return concurrent.futures.ProcessPoolExecutor(cpu_count())
+
 from ray.util.multiprocessing import Pool
 
 class barefoot():    
@@ -136,6 +141,7 @@ class barefoot():
             else:
                 self.__load_from_save(workingDir, calculationName)
             self.restore_calc = restore_calc
+            self.pool = Pool()
             self.timeCheck = time()
             self.logger.info("Previous Save State Restored")
         else:
@@ -188,7 +194,10 @@ class barefoot():
             else:
                 self.sampleScheme = "LHS"
                 self.logger.warning("Invalid Sample Scheme! Using default (LHS).")
-            self.keepSubRunning = keepSubRunning
+            if self.multinode != 0:
+                self.keepSubRunning = keepSubRunning
+            else:
+                self.keepSubRunning = True
             self.updateROMafterTM = updateROMafterTM
             self.reification = reification
             self.batch = batch
@@ -301,9 +310,10 @@ class barefoot():
             
     def __save_calculation_state(self):
         # This function saves the entire barefoot object into a pickle file
-        with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'wb') as f:
-            dump(self, f)
-        self.logger.info("Calculation State Saved")
+        # with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'wb') as f:
+        #     dump(self, f)
+        # self.logger.info("Calculation State Saved")
+        self.logger.info("Calculation State Save Skipped")
         
     def __load_from_save(self, workingDir, calculationName):
         # This function restores the barefoot object parameters from a saved
@@ -410,9 +420,13 @@ class barefoot():
                 for ii in range(len(self.ROM)):
                     count.append(0)                
                     initInput, check = apply_constraints(self.initDataPathorNum[ii], 
-                                                         self.nDim, self.res,
-                                                          self.A, self.b, self.Aeq, self.beq, 
-                                                          self.lb, self.ub, self.constr_func, self.sampleScheme)
+                                                         self.nDim, resolution=self.res,
+                                                          A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                                          lb=self.lb, ub=self.ub, func=self.constr_func, 
+                                                          sampleScheme=self.sampleScheme,opt_sample_size=True)
+                
+                    
+                
                     if check:
                         self.logger.debug("ROM {} - Initial Data - All constraints applied successfully".format(ii))
                     else:
@@ -431,9 +445,10 @@ class barefoot():
                         self.ROMInitOutput.append(np.zeros(initInput.shape[0]))
             # Obtain LHS initial data for Truth Model
             initInput, check = apply_constraints(self.initDataPathorNum[-1], 
-                                                     self.nDim, self.res,
-                                                      self.A, self.b, self.Aeq, self.beq, 
-                                                      self.lb, self.ub, self.constr_func, self.sampleScheme)
+                                                 self.nDim, resolution=self.res,
+                                                 A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                                 lb=self.lb, ub=self.ub, func=self.constr_func, 
+                                                 sampleScheme=self.sampleScheme,opt_sample_size=True)
             count.append(0)
             if check:
                 self.logger.debug("TM - Initial Data - All constraints applied successfully")
@@ -460,12 +475,16 @@ class barefoot():
             temp_index = np.zeros(len(params))
             pass_calculations = []
             self.logger.debug("Parameters Defined. Starting Concurrent.Futures Calculation")
-            self.pool.terminate()
-            self.pool = Pool()
+            try:
+                self.pool.terminate()
+                self.pool = Pool()
+            except AttributeError:
+                self.pool = Pool()
             with self.pool as executor:
                 for result_from_process in zip(params, executor.map(call_model, params)):
                     par, results = result_from_process 
-                    if type(results) != bool:
+                    try:
+                        test = results.shape
                         if par["Model Index"] != -1:                        
                             self.ROMInitInput[par["Model Index"]][count[par["Model Index"]],:] = par["Input Values"]
                             if self.multiObjective:
@@ -497,6 +516,8 @@ class barefoot():
                             temp_index[par["ParamIndex"]] = par["Model Index"]
                         count[par["Model Index"]] += 1
                         pass_calculations.append(par["ParamIndex"])
+                    except AttributeError:
+                        pass
             self.logger.debug("Concurrent.Futures Calculation Completed")
             if self.multiObjective:
                 temp_y = temp_y[pass_calculations,:]
@@ -677,10 +698,13 @@ class barefoot():
         else:
             sampleOption = "LHS"
         self.xFused, check = apply_constraints(sampleSize, 
-                                          self.nDim, self.res,
-                                          self.A, self.b, self.Aeq, self.beq, 
-                                          self.lb, self.ub, self.constr_func,
-                                          sampleOption, opt_sample_size=False)
+                                          self.nDim, resolution=self.res,
+                                          A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                          lb=self.lb, ub=self.ub, func=self.constr_func,
+                                          sampleScheme=sampleOption, opt_sample_size=False)
+        
+       
+        
         if check:
             self.logger.debug("Fused Points - All constraints applied successfully {}/{}".format(self.xFused.shape[0], sampleSize))
         else:
@@ -1038,8 +1062,11 @@ class barefoot():
         kg_output = []
         # Start the concurrent calculations and return the output array
         self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
-        self.pool.terminate()
-        self.pool = Pool()
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()
         with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(acqFunc,parameters)):
                 params, results = result_from_process
@@ -1236,8 +1263,11 @@ class barefoot():
             func = fused_calculate
         
         # Run the concurrent processes and save the outputs
-        self.pool.terminate()
-        self.pool = Pool()
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()
         with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(func,parameters)):
                 params, results = result_from_process
@@ -1303,32 +1333,65 @@ class barefoot():
             temp_y = np.zeros(len(params))
         temp_index = np.zeros(len(params)) 
         costs = np.zeros(len(params))
+        passed_calcs = []
         # Run the concurrent calculations and extract the results
         self.logger.info("Start ROM Function Evaluations | {} Calculations".format(len(params)))
-        self.pool.terminate()
-        self.pool = Pool()
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()
         with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
-                if len(results.shape) == 1:
-                    results = np.expand_dims(results, axis=0)
-                
-                if self.multiObjective:
-                    results = self.goal*results
-                    temp_y[par["ParamIndex"],:] = results
-                else:
-                    results = self.goal*results
-                    temp_y[par["ParamIndex"]] = results
-                temp_x[par["ParamIndex"],:] = par["Input Values"]
-                temp_index[par["ParamIndex"]] = par["Model Index"]
-                if self.multiObjective:
-                    self.reificationObj[0].update_GP(par["Input Values"], results[0,0], par["Model Index"])
-                    self.reificationObj[1].update_GP(par["Input Values"], results[0,1], par["Model Index"])
-                else:
-                    self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
-                count[par["Model Index"]] += 1
-        return temp_x, temp_y, temp_index, costs, count
+                # if the truth function fails to evaluate, it should return false
+                # and therefore the results are not included in the output
+                try:
+                    test = results.shape
+                    results_evaluate = True
+                    passed_calcs.append(par["ParamIndex"])
+                except AttributeError:
+                    results_evaluate = False
+                # if self.multiObjective:
+                #     try:
+                #         if results == False:
+                #             results_evaluate = False
+                #     except ValueError:
+                #         results_evaluate = True
+                #         passed_calcs.append(par["ParamIndex"])
+                # else:
+                #     if results != False:
+                #         results_evaluate = True
+                #         passed_calcs.append(par["ParamIndex"])
+                #     else:
+                #         results_evaluate = False
+
+                if results_evaluate:
+                    if len(results.shape) == 1:
+                        results = np.expand_dims(results, axis=0)
+                    
+                    if self.multiObjective:
+                        results = self.goal*results
+                        temp_y[par["ParamIndex"],:] = results
+                    else:
+                        results = self.goal*results
+                        temp_y[par["ParamIndex"]] = results
+                    temp_x[par["ParamIndex"],:] = par["Input Values"]
+                    temp_index[par["ParamIndex"]] = par["Model Index"]
+                    if self.multiObjective:
+                        self.reificationObj[0].update_GP(par["Input Values"], results[0,0], par["Model Index"])
+                        self.reificationObj[1].update_GP(par["Input Values"], results[0,1], par["Model Index"])
+                    else:
+                        self.reificationObj.update_GP(par["Input Values"], results, par["Model Index"])
+                    
+                    count[par["Model Index"]] += 1
+        # Remove any calculations that failed from the output and save the 
+        # data
+        temp_x = temp_x[passed_calcs]
+        temp_y = temp_y[passed_calcs]
+        temp_index = temp_index[passed_calcs]
+        return temp_x, temp_y, temp_index, costs, count, len(passed_calcs)
     
     def __call_Truth(self, params, count):
         # This function evaluates the truth model at the points defined by the 
@@ -1344,31 +1407,40 @@ class barefoot():
         passed_calcs = []
         # Run the concurrent calculations and extract the results
         self.logger.info("Start Truth Model Evaluations | {} Sets".format(len(params)))
-        self.pool.terminate()
-        self.pool = Pool()
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()
         with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
-                if len(results.shape) == 1:
-                    results = np.expand_dims(results, axis=0)
                 costs[par["ParamIndex"]] += self.modelCosts[par["Model Index"]]
                 # if the truth function fails to evaluate, it should return false
                 # and therefore the results are not included in the output
-                if self.multiObjective:
-                    try:
-                        if results == False:
-                            results_evaluate = False
-                    except ValueError:
-                        results_evaluate = True
-                        passed_calcs.append(par["ParamIndex"])
-                else:
-                    if results != False:
-                        results_evaluate = True
-                        passed_calcs.append(par["ParamIndex"])
-                    else:
-                        results_evaluate = False
+                try:
+                    test = results.shape
+                    results_evaluate = True
+                    passed_calcs.append(par["ParamIndex"])
+                except AttributeError:
+                    results_evaluate = False
+                # if self.multiObjective:
+                #     try:
+                #         if results == False:
+                #             results_evaluate = False
+                #     except ValueError:
+                #         results_evaluate = True
+                #         passed_calcs.append(par["ParamIndex"])
+                # else:
+                #     if results != False:
+                #         results_evaluate = True
+                #         passed_calcs.append(par["ParamIndex"])
+                #     else:
+                #         results_evaluate = False
                 
                 if results_evaluate:
+                    if len(results.shape) == 1:
+                        results = np.expand_dims(results, axis=0)
                     if self.multiObjective:
                         results = self.goal*results
                         temp_y[par["ParamIndex"],:] = results
@@ -1392,20 +1464,24 @@ class barefoot():
                             self.modelGP.update(par["Input Values"], results, 0.05, False)
         # Remove any calculations that failed from the output and save the 
         # data
-        temp_x = temp_x[passed_calcs]
-        temp_y = temp_y[passed_calcs]
-        temp_index = temp_index[passed_calcs]
-        self.logger.info("Truth Model Evaluations Completed")
-        self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
-        self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
-        if self.multiObjective:
-            if np.max(temp_y[:,0]) > self.maxTM[0]:
-                self.maxTM[0] = np.max(temp_y[:,0])
-            if np.max(temp_y[:,1]) > self.maxTM[1]:
-                self.maxTM[1] = np.max(temp_y[:,1])
+        
+        if passed_calcs != []:
+            temp_x = temp_x[passed_calcs]
+            temp_y = temp_y[passed_calcs]
+            temp_index = temp_index[passed_calcs]
+            self.logger.info("Truth Model Evaluations Completed")
+            self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+            self.totalBudgetLeft -= self.batchSize*self.modelCosts[-1]
+            if self.multiObjective:
+                if np.max(temp_y[:,0]) > self.maxTM[0]:
+                    self.maxTM[0] = np.max(temp_y[:,0])
+                if np.max(temp_y[:,1]) > self.maxTM[1]:
+                    self.maxTM[1] = np.max(temp_y[:,1])
+            else:
+                if np.max(temp_y) > self.maxTM:
+                    self.maxTM = np.max(temp_y)
         else:
-            if np.max(temp_y) > self.maxTM:
-                self.maxTM = np.max(temp_y)
+            self.logger.critical("All Truth Model Evaluations Failed to Produce Results! Continue with no new results.")
         # Return the updated model call counts
         return count
     
@@ -1498,8 +1574,11 @@ class barefoot():
         # run all the calculations concurrently and obtain the outputs
         fused_output = [[],[],[],[],[],[]]
         count = 0
-        self.pool.terminate()
-        self.pool = Pool()
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()
         with self.pool as executor:
             for result_from_process in zip(parameters, executor.map(evaluateFusedModel,parameters)):
                 params, results = result_from_process
@@ -1648,10 +1727,13 @@ class barefoot():
                     evalP.append(np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==pp,self.inputLabels]))
                 
                 x_test, check = apply_constraints(self.sampleCount, 
-                                              self.nDim, self.res,
-                                              self.A, self.b, self.Aeq, self.beq, 
-                                              self.lb, self.ub, self.constr_func,
-                                              self.sampleScheme,True,evalP)
+                                              self.nDim, resolution=self.res,
+                                              A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                              lb=self.lb, ub=self.ub, func=self.constr_func,
+                                              sampleScheme=self.sampleScheme,opt_sample_size=True,
+                                              evaluatedPoints=evalP)
+                
+                 
                 
                 # If constraints can't be satisfied, notify the user in the log
                 if check:
@@ -1701,12 +1783,15 @@ class barefoot():
                 self.timeCheck = time()
                 
                 # Call the reduced order models
-                temp_x, temp_y, temp_index, costs, count = self.__call_ROM(medoid_out, x_test[medoid_out[:,2].astype(int),:])
+                temp_x, temp_y, temp_index, costs, count, check = self.__call_ROM(medoid_out, x_test[medoid_out[:,2].astype(int),:])
                 
-                self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
-                
-                if self.acquisitionFunc == "Hedge":
-                    self.__update_Hedge_Probabilities("ROM", x_test)
+                if check != 0:
+                    self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+                    
+                    if self.acquisitionFunc == "Hedge":
+                        self.__update_Hedge_Probabilities("ROM", x_test)
+                else:
+                    self.logger.critical("All ROM Evalutions Failed to produce a result! Continue with no new data")
 
                 self.totalBudgetLeft -= np.sum(costs) + model_cost
                 self.tmBudgetLeft -= np.sum(costs) + model_cost
@@ -1719,10 +1804,11 @@ class barefoot():
                     
                     # create a test set that is dependent on the number of dimensions            
                     tm_test, check = apply_constraints(self.fusedSamples, 
-                                              self.nDim, self.res,
-                                              self.A, self.b, self.Aeq, self.beq, 
-                                              self.lb, self.ub, self.constr_func, "LHS", True, evalP)
-                    
+                                              self.nDim, resolution=self.res,
+                                              A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                              lb=self.lb, ub=self.ub, func=self.constr_func, 
+                                              sampleScheme=self.sampleScheme, opt_sample_size=True, 
+                                              evaluatedPoints=evalP)
                     if check:
                         self.logger.debug("Truth Model Query - All constraints applied successfully")
                     else:
@@ -1738,7 +1824,6 @@ class barefoot():
                     fused_output = np.array(fused_output)
                     
                     if self.batch:
-                        
                         if fused_output.shape[0] > self.batchSize:
                             # medoids, clusters = k_medoids(fused_output[:,0].reshape((-1,1)), self.batchSize)
                             # kmedoids = KMedoids(n_clusters=self.batchSize, random_state=0).fit(fused_output[:,0].reshape((-1,1)))
@@ -1765,6 +1850,14 @@ class barefoot():
                                        "Input Values":np.array(tm_test[int(fused_output[medoids[iii],1]),:], dtype=np.float),
                                        "ParamIndex":param_index})
                         param_index += 1
+                        
+                    if len(medoids) < self.batchSize:
+                        for iii in range(self.batchSize - len(medoids)):
+                            params.append({"Model Index":-1,
+                                           "Model":self.TM,
+                                           "Input Values":np.array(tm_test[np.random.randint(0,tm_test.shape[0]),:], dtype=np.float),
+                                           "ParamIndex":param_index})
+                            param_index += 1
                     
                     self.tmIterCount = 0
                     self.tmBudgetLeft = self.tmBudget
@@ -1794,7 +1887,8 @@ class barefoot():
                         if (self.totalBudgetLeft < 0) or (self.currentIteration >= self.iterLimit):
                             pass
                         else:
-                            self.__restart_subs()
+                            if self.multinode != 0:
+                                self.__restart_subs()
                 
                 # save the required outputs
                 self.__add_to_iterationData(time()-self.timeCheck + model_cost, count)
@@ -1839,11 +1933,12 @@ class barefoot():
                 evalP.append(np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==pp,self.inputLabels]))
             
             x_test, check = apply_constraints(self.sampleCount, 
-                                          self.nDim, self.res,
-                                          self.A, self.b, self.Aeq, self.beq, 
-                                          self.lb, self.ub, self.constr_func,
-                                          self.sampleScheme, True, evalP)
-            
+                                          self.nDim, resolution=self.res,
+                                          A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                          lb=self.lb, ub=self.ub, func=self.constr_func,
+                                          sampleScheme=self.sampleScheme, opt_sample_size=True, 
+                                          evaluatedPoints=evalP)
+        
             
             # If constraints can't be satisfied, notify the user in the log
             if check:
@@ -1898,8 +1993,11 @@ class barefoot():
                 kg_output = []
             # Start the concurrent calculations and return the output array
             self.logger.info("Start Acquisition Function Evaluations for {} Parameter Sets".format(len(parameters)))
-            self.pool.terminate()
-            self.pool = Pool()
+            try:
+                self.pool.terminate()
+                self.pool = Pool()
+            except AttributeError:
+                self.pool = Pool()
             with self.pool as executor:
                 for result_from_process in zip(parameters, executor.map(batchAcquisitionFunc,parameters)):
                     params, results = result_from_process
@@ -2057,7 +2155,7 @@ class barefoot():
                 # kmedoids = KMedoids(n_clusters=self.batchSize, random_state=0).fit(med_input[:,0].reshape((-1,1)))
                 # medoids = kmedoids.medoid_indices_
                 # medoids = kmedoids_max(med_input[:,0].reshape((-1,1)), 1)
-                medoids = kmedoids_max(med_input[:,0:3], 1)
+                medoids = kmedoids_max(med_input[:,0:3], med_input.shape[0])
             #storeObject([np.where(med_input[:,0] == np.max(med_input[:,0]))[0][0], medoids], "ReifiROM-{}".format(self.currentIteration))
         else:
             max_index = np.where(med_input[:,0] == np.max(med_input[:,0]))[0][0]
@@ -2192,8 +2290,11 @@ class barefoot():
         temp_iter = np.array(modelIter_record)
         
         # Run the evaluations concurrently and store the outputs         
-        self.pool.terminate()
-        self.pool = Pool()      
+        try:
+            self.pool.terminate()
+            self.pool = Pool()
+        except AttributeError:
+            self.pool = Pool()  
         with self.pool as executor:
             for result_from_process in zip(params, executor.map(call_model, params)):
                 par, results = result_from_process
