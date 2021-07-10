@@ -16,17 +16,17 @@ from pickle import load, dump
 from scipy.stats import norm
 
 
-import logging
-# create logger to output framework progress
-strLog = logging.getLogger("StreamLog")
-strLog.setLevel(logging.DEBUG)
-sh = logging.StreamHandler()
-sh.setLevel(logging.DEBUG)
-# create formatter and add it to the handlers
-formatter = logging.Formatter('%(name)s - %(message)s')
-sh.setFormatter(formatter)
-# add the handler to the logger
-strLog.addHandler(sh)
+# import logging
+# # create logger to output framework progress
+# strLog = logging.getLogger("StreamLog")
+# strLog.setLevel(logging.DEBUG)
+# sh = logging.StreamHandler()
+# sh.setLevel(logging.DEBUG)
+# # create formatter and add it to the handlers
+# formatter = logging.Formatter('%(name)s - %(message)s')
+# sh.setFormatter(formatter)
+# # add the handler to the logger
+# strLog.addHandler(sh)
 
 
 
@@ -569,11 +569,11 @@ def fused_calculate(param):
                                 fused_model_HP[0], 0.1, 
                                 kernel)
     
-    strLog.critical("X-Test Shape: {}".format(x_test.shape))
+    # strLog.critical("X-Test Shape: {}".format(x_test.shape))
     
     fused_mean, fused_var = model_temp.predict_fused_GP(x_test)
     
-    strLog.critical("Fused Mean Shape - {}".format(fused_mean.shape))
+    # strLog.critical("Fused Mean Shape - {}".format(fused_mean.shape))
     
     if sampleOpt == "TS":
         """
