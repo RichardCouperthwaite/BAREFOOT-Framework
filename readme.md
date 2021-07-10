@@ -26,7 +26,7 @@ The framework is initialized in a two stage process. The first sets up the frame
 * restore_calc : This parameter toggles whether the framework data is set up from the information provided or retrieved from a save_state file. This can be used to restart a calculation
 * updateROMafterTM : This parameter allows the reduced order models to be retrained after getting more data from the Truth Model. The model function calls do not change, so the training needs to reflect in the same function.
 * externalTM : In cases where it is necessary to evaluate the Truth Model separate to the framework (for example, if the Truth Model is an actual experiment), this toggles the output of the predicted points to a separate file for use externally. The framework is shut down after the data is output, see test examples for how to restart the framework after the external Truth Model has been evaluated
-* acquisitionFunc : The acquisition function to use to evaluate the next best points for the reduced order models. Currently the options are "KG" for Knowledge Gradient and "EI" for expected improvement.
+* acquisitionFunc : The acquisition function to use to evaluate the next best points for the reduced order models. Currently the options are "KG" for Knowledge Gradient, "EI" for expected improvement, "UCB" for Upper Confidence Bound, "PI" for Probability of Improvment, "Hedge" for the GPHedge Portfolio Optimization approach, and "Greedy" for a greedy optimization approach.
 * A, b, Aeq, beq: Equality and inequality constraints according to the following equations:
   * A*x <= b
   * Aeq*x == b
@@ -34,6 +34,15 @@ The framework is initialized in a two stage process. The first sets up the frame
 * func : function constraints, must take the input matrix (x) and output a vector of length equal to the number of samples in the input matrix (x) with boolean values.
 * keepSubRunning : Determines whether the subprocesses are left running while calling the Truth Model
 * verbose : Determines the logging level for tracking the calculations.
+* sampleScheme : This determines the approach used when sampling the design space. Three options are available Latin Hypercube sampling ("LHS"), grid sampling ("Grid") or custom ("Custom"). The custom sampling approach requries a Pandas created csv file with possible points to query to be included in the data subdirectory of the BAREFOOT Framework.
+* tmSampleOpt : This sets the acquisition function to use when determining the points to evaluate from the Truth Model. The possible values are the same as for the acquisitionFunc parameter.
+* logname : This changes the name of the log file that will hold the progress output.
+* maximize : This parameter toggles maximization and minimization. The framework will always operate as a maximization, however, by setting this parameter to False, the output from all the models will be multiplied by -1 to ensure that the framework actually minimizes the function.
+* train_func : When training the reduced order models after the Truth Model queries, it is necessary to include this function that will actually do the training.
+* reification : Boolean parameter that toggles whether the framework will use the reification approach or not. Defaults to True.
+* batch : Boolean parameter that toggles the batch approach in the framework. Defaults to True.
+* multiObjective : Toggles multi-objective optimization
+* multiObjectRef : Holds the reference point required by the EHVI acquisition function
 
 The second stage sets up the specific calculation required:
 
@@ -49,71 +58,19 @@ The second stage sets up the specific calculation required:
 * upperBound : The upper bound of the hyperparameters (usually setting to 1 is sufficient since inputs are on a unit hypercube).
 * lowBound : The lower bound of the hypeparameter values.
 * fusedPoints : The number of points per dimension to use when constructing the Fused GP. Points for evaluating the Fused GP are sampled linearly for each dimension, creating a grid of points to evaluate the fused mean and variance.
+* fusedHP : When using the calculations with only the reification approach, and not the batch approach, it is necessary to provide hyperparmeters to use with the fused model GP. This parameter is a list of these parameters with the following format: [signal variance, length scale 1, ..., length scale n].
+* fusedSamples : The number of samples to take from the design space for evaluating the fused model for determining next-best points from the Truth model.
 
-The code below is included in the "barefoot.py" file as a test, and provides the minimum input required for running the BAREFOOT Framework.
+## Example Code
+The sample_code.py file has sample code that demonstrates many of the features of the framework, and also demonstrates how to construct initial data files, and subprocess batch files. There are three code options that can be run in the sample_code.py file:
 
-```
-import matplotlib.pyplot as plt
-from barefoot import barefoot
-import numpy as np
-
-def rom1(x):
-    x = x*(2)+0.5
-    return -np.sin(9.5*np.pi*x) / (2*x)
-
-def rom2(x):
-    x = x*(2)+0.5
-    return -(x-1)**4
-
-def tm(x):
-    x = x*(2)+0.5
-    # Gramacy & Lee Test Function
-    return -(x-1)**4 - np.sin(10*np.pi*x) / (2*x)
-
-def plot_results(calcName):
-    x = np.linspace(0,1,1000)
-
-    y1 = tm(x)
-    y2 = rom1(x)
-    y3 = rom2(x)
-    
-    plt.figure()
-    plt.plot(x,y1,label="TM")
-    plt.plot(x,y2,label="ROM1")
-    plt.plot(x,y3,label="ROM2")
-    plt.legend()
-
-    with open('./results/{}/iterationData'.format(calcName), 'rb') as f:
-        iterationData = load(f)
-    
-    plt.figure()
-    plt.plot(iterationData.loc[:,"Iteration"], iterationData.loc[:,"Max Found"])
-
-def singeNodeTest():
-    np.random.seed(100)
-    ROMList = [rom1, rom2]
-    test = barefoot(ROMModelList=ROMList, TruthModel=tm, 
-                    calcInitData=True, initDataPathorNum=[1,1,1,1], nDim=1, 
-                    calculationName="SingleNodeTest", acquisitionFunc="EI")
-    modelParam = {'model_l':[[0.1],[0.1]], 
-                'model_sf':[1,1,1], 
-                'model_sn':[0.01,0.01], 
-                'means':[0,0], 
-                'std':[1,1], 
-                'err_l':[[0.1],[0.1]], 
-                'err_sf':[1,1,1], 
-                'err_sn':[0.01,0.01],
-                'costs':[1,2,20]}
-    test.initialize_parameters(modelParam=modelParam, iterLimit=30, 
-                               sampleCount=10, hpCount=50, 
-                               batchSize=2, tmIter=5)
-    test.run_optimization()
-    
-    plot_results("SingleNodeTest")
-
-if __name__ == "__main__":
-    singeNodeTest()
-```
+ 1. runBatch:
+   * Demonstrates the calculation of initial data in the framework, and then uses this for a simple batch calculation
+ 3. runReifi:
+   * Demonstrates how to store initial data for importing into the framework, and then uses this for a simple reification only calculation
+ 5. runBAREFOOT:
+   * Demonstrates how to set up the subprocess batch files for a SLURM batch server. Uses these subprocesses for conducting a full BAREFOOT calculation.
+   
 
 For more information on the methods used in this framework, please see our publications:
 

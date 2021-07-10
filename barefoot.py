@@ -1809,7 +1809,6 @@ class barefoot():
                                               lb=self.lb, ub=self.ub, func=self.constr_func, 
                                               sampleScheme=self.sampleScheme, opt_sample_size=True, 
                                               evaluatedPoints=evalP)
-
                     if check:
                         self.logger.debug("Truth Model Query - All constraints applied successfully")
                     else:
