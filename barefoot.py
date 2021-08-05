@@ -20,7 +20,7 @@ from util import cartesian, call_model, apply_constraints
 from util import calculate_KG, calculate_EI, fused_calculate, calculate_TS, calculate_Greedy, calculate_PI, calculate_UCB
 from util import calculate_GPHedge, evaluateFusedModel, batchAcquisitionFunc, kmedoids_max
 from util import fused_EHVI, calculate_EHVI, Pareto_finder, storeObject
-from gpModel import gp_model
+from gpModel import gp_model, bmarsModel
 from sklearn_extra.cluster import KMedoids
 import logging
 from pyDOE import lhs
@@ -39,7 +39,7 @@ class barefoot():
                  A=[], b=[], Aeq=[], beq=[], lb=[], ub=[], func=[], keepSubRunning=True, 
                  verbose=False, sampleScheme="LHS", tmSampleOpt="Greedy", logname="BAREFOOT",
                  maximize=True, train_func=[], reification=True, batch=True, 
-                 multiObjective=False, multiObjectRef=[]):
+                 multiObjective=False, multiObjectRef=[], surrogate="GP", externalROM=False):
         
         """
         Python Class for Batch Reification/Fusion Optimization (BAREFOOT) Framework Calculations
@@ -119,18 +119,19 @@ class barefoot():
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         fh.setFormatter(formatter)
         # add the handler to the logger
-        self.logger.addHandler(fh)     
-        with open(f"{logname}.log", 'w') as f:
-            pass
-        
-        self.logger.info("#########################################################")
-        self.logger.info("#                                                       #")
-        self.logger.info("#        Start BAREFOOT Framework Initialization        #")
-        self.logger.info("#                                                       #")
-        self.logger.info("#########################################################")
-        self.logger.info("*********************************************************")
-        self.logger.info("* Calculation Name: {}   ".format(calculationName))
-        self.logger.info("*********************************************************")
+        self.logger.addHandler(fh)   
+        if not restore_calc:
+            with open(f"{logname}.log", 'w') as f:
+                pass
+            
+            self.logger.info("#########################################################")
+            self.logger.info("#                                                       #")
+            self.logger.info("#        Start BAREFOOT Framework Initialization        #")
+            self.logger.info("#                                                       #")
+            self.logger.info("#########################################################")
+            self.logger.info("*********************************************************")
+            self.logger.info("* Calculation Name: {}   ".format(calculationName))
+            self.logger.info("*********************************************************")
         
         # Restore a previous calculation and restart the timer or load new
         # information and initialize
@@ -164,10 +165,22 @@ class barefoot():
             self.initDataPathorNum = initDataPathorNum
             self.currentIteration = -1
             self.maximize = maximize
+            self.surrogate = surrogate
+            self.updateROMafterTM = updateROMafterTM
+            self.reification = reification
+            self.batch = batch
+            self.externalTM = externalTM
+            self.externalROM = externalROM
             if self.multiObjective:
                 self.tmSampleOpt = "EHVI"
                 self.acquisitionFunc = "EHVI"
                 self.logger.warning("Default multiobjective acquisition function (EHVI) selected!")
+            elif self.surrogate == "BMARS":
+                self.acquisitionFunc = "EI-BMARS"
+                self.tmSampleOpt = "EI-BMARS"
+                self.logger.warning("BMARS Surrogate Model selected! Default EI for BMARS acquisition function selected!")
+                self.reification = False
+                self.logger.warning("BMARS Surrogate Model not compatible with Reification! Reification approach disabled!")
             else:
                 if tmSampleOpt in ["Hedge", "Greedy", "EI", "KG", "TS", "PI", "UCB"]:
                     self.tmSampleOpt = tmSampleOpt
@@ -198,10 +211,6 @@ class barefoot():
                 self.keepSubRunning = keepSubRunning
             else:
                 self.keepSubRunning = True
-            self.updateROMafterTM = updateROMafterTM
-            self.reification = reification
-            self.batch = batch
-            self.externalTM = externalTM
             self.__create_dir_and_files()
             self.__create_output_dataframes()
             self.__get_initial_data__()
@@ -309,22 +318,28 @@ class barefoot():
         self.logger.info("Dataframes Pickled and Dumped to Results Directory")
             
     def __save_calculation_state(self):
+        skipValues = ['logger', 'pool']
+        saveObj = {}
+        for item in self.__dict__:
+            if item not in skipValues:
+                saveObj[item] = self.__dict__[item]
         # This function saves the entire barefoot object into a pickle file
-        # with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'wb') as f:
-        #     dump(self, f)
-        # self.logger.info("Calculation State Saved")
-        self.logger.info("Calculation State Save Skipped")
+        with open('{}/data/{}_save_state'.format(self.workingDir, self.calculationName), 'wb') as f:
+            dump(saveObj, f)
+        self.logger.info("Calculation State Saved")
+        # self.logger.info("Calculation State Save Skipped")
         
     def __load_from_save(self, workingDir, calculationName):
         # This function restores the barefoot object parameters from a saved
         # pickle file. In order for this to work, each variable of the object
         # is restored separately.
         try:
+            print('{}/data/{}_save_state'.format(workingDir, calculationName))
             with open('{}/data/{}_save_state'.format(workingDir, calculationName), 'rb') as f:
                 saveState = load(f)
                 self.logger.debug("Save State File Found")
-            for item in vars(saveState).items():
-                setattr(self, item[0], item[1])
+            for item in saveState:
+                setattr(self, item, saveState[item])
         except FileNotFoundError:
             self.loadFailed = True
             self.logger.warning("Could not find Save State File")
@@ -538,6 +553,9 @@ class barefoot():
                 self.ROMInitOutput = data["ROMInitOutput"]
                 self.ROMInitInput = data["ROMInitInput"]
             
+            print(self.TMInitInput)
+            print(self.TMInitOutput)
+            
             ROMSize = 0
             for mmm in range(len(self.ROMInitInput)):
                 ROMSize += self.ROMInitOutput[mmm].shape[0]
@@ -747,12 +765,16 @@ class barefoot():
                                                       self.TMInitInput, self.TMInitOutput[1], 
                                                       len(self.ROM), self.nDim, self.covFunc)]
                 else:
-                    self.modelGP = [gp_model(self.TMInitInput, self.TMInitOutput[0], 
-                                            np.ones((self.nDim)), 1, 0.05, 
-                                            self.nDim, self.covFunc),
-                                    gp_model(self.TMInitInput, self.TMInitOutput[1], 
-                                            np.ones((self.nDim)), 1, 0.05, 
-                                            self.nDim, self.covFunc)]
+                    if self.surrogate == "GP":
+                        self.modelGP = [gp_model(self.TMInitInput, self.TMInitOutput[0], 
+                                                np.ones((self.nDim)), 1, 0.05, 
+                                                self.nDim, self.covFunc),
+                                        gp_model(self.TMInitInput, self.TMInitOutput[1], 
+                                                np.ones((self.nDim)), 1, 0.05, 
+                                                self.nDim, self.covFunc)]
+                    else:
+                        self.modelGP = [bmarsModel(self.TMInitInput, self.TMInitOutput[0]),
+                                        bmarsModel(self.TMInitInput, self.TMInitOutput[1])]
             else:
                 # build the reification object with the combined inputs and initial values
                 if self.reification:
@@ -768,9 +790,12 @@ class barefoot():
                                                       self.TMInitInput, self.TMInitOutput, 
                                                       len(self.ROM), self.nDim, self.covFunc)
                 else:
-                    self.modelGP = gp_model(self.TMInitInput, self.TMInitOutput, 
-                                            np.ones((self.nDim)), 1, 0.05, 
-                                            self.nDim, self.covFunc)
+                    if self.surrogate == "GP":
+                        self.modelGP = gp_model(self.TMInitInput, self.TMInitOutput, 
+                                                np.ones((self.nDim)), 1, 0.05, 
+                                                self.nDim, self.covFunc)
+                    elif self.surrogate == "BMARS":
+                        self.modelGP = bmarsModel(self.TMInitInput, self.TMInitOutput)
         self.allTMInput = []
         self.allTMOutput = []
         self.tmBudgetLeft = self.tmBudget
@@ -1686,8 +1711,12 @@ class barefoot():
                 func(self)
                 no_error = True
             except Exception as err:
-                self.logger.critical("Optimization Code Failed - See Error Below")
-                self.logger.exception(err)
+                if str(err) == 'Framework Shut Down to Facilitate External ROM Calculations!':
+                    self.logger.info(err)
+                    no_error = True
+                else:
+                    self.logger.critical("Optimization Code Failed - See Error Below")
+                    self.logger.exception(err)
                 
             if self.multinode > 0:
                 for fname in range(self.multinode):
@@ -1711,88 +1740,102 @@ class barefoot():
             calcPerProcess, all_started = self.__start_subprocesses__(self.multinode)
         else:
             calcPerProcess, all_started = (0, True)
+        self.ROM_Calc_Start = True
         # Once all subprocesses have started, start the main calculation
         if all_started:
             start_process = True
             while start_process:
-                text_num = str(self.currentIteration)
-                self.logger.info("#########################################################")
-                self.logger.info("#                Start Iteration : {}                 #".format("0"*(4-len(text_num))+text_num))
-                self.logger.info("#########################################################")
-                self.timeCheck = time()
-                
-                # Check constraints and obtain latin-hypercube sampled test points
-                evalP = []
-                for pp in range(len(self.ROM)):
-                    evalP.append(np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==pp,self.inputLabels]))
-                
-                x_test, check = apply_constraints(self.sampleCount, 
-                                              self.nDim, resolution=self.res,
-                                              A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
-                                              lb=self.lb, ub=self.ub, func=self.constr_func,
-                                              sampleScheme=self.sampleScheme,opt_sample_size=True,
-                                              evaluatedPoints=evalP)
-                
-                 
-                
-                # If constraints can't be satisfied, notify the user in the log
-                if check:
-                    self.logger.debug("ROM - All constraints applied successfully {}/{}".format(x_test.shape[0], self.sampleCount))
-                else:
-                    self.logger.critical("ROM - Sample Size NOT met due to constraints! Continue with {}/{} Samples".format(x_test.shape[0], self.sampleCount))
-                
-                if self.multiObjective:
-                    if self.reification:
-                        new_mean = []
-                        # obtain predictions from the low-order GPs
-                        for iii in range(len(self.ROM)):
-                            new1, var1 = self.reificationObj[0].predict_low_order(x_test, iii)
-                            
-                            new2, var2 = self.reificationObj[1].predict_low_order(x_test, iii)
+                if self.ROM_Calc_Start:
+                    text_num = str(self.currentIteration)
+                    self.logger.info("#########################################################")
+                    self.logger.info("#                Start Iteration : {}                 #".format("0"*(4-len(text_num))+text_num))
+                    self.logger.info("#########################################################")
+                    self.timeCheck = time()
+                    
+                    # Check constraints and obtain latin-hypercube sampled test points
+                    evalP = []
+                    for pp in range(len(self.ROM)):
+                        evalP.append(np.array(self.evaluatedPoints.loc[self.evaluatedPoints['Model Index']==pp,self.inputLabels]))
+                    
+                    x_test, check = apply_constraints(self.sampleCount, 
+                                                  self.nDim, resolution=self.res,
+                                                  A=self.A, b=self.b, Aeq=self.Aeq, beq=self.beq, 
+                                                  lb=self.lb, ub=self.ub, func=self.constr_func,
+                                                  sampleScheme=self.sampleScheme,opt_sample_size=True,
+                                                  evaluatedPoints=evalP)
+                    
+                     
+                    
+                    # If constraints can't be satisfied, notify the user in the log
+                    if check:
+                        self.logger.debug("ROM - All constraints applied successfully {}/{}".format(x_test.shape[0], self.sampleCount))
+                    else:
+                        self.logger.critical("ROM - Sample Size NOT met due to constraints! Continue with {}/{} Samples".format(x_test.shape[0], self.sampleCount))
+                    
+                    if self.multiObjective:
+                        if self.reification:
+                            new_mean = []
+                            # obtain predictions from the low-order GPs
+                            for iii in range(len(self.ROM)):
+                                new1, var1 = self.reificationObj[0].predict_low_order(x_test, iii)
+                                
+                                new2, var2 = self.reificationObj[1].predict_low_order(x_test, iii)
+                                new_mean.append([new1, new2])
+                    
+                        else:
+                            new_mean = []
+                            new1, var1 = self.modelGP[0].predict_var(x_test)
+                            new2, var2 = self.modelGP[1].predict_var(x_test)
                             new_mean.append([new1, new2])
-                
                     else:
-                        new_mean = []
-                        new1, var1 = self.modelGP[0].predict_var(x_test)
-                        new2, var2 = self.modelGP[1].predict_var(x_test)
-                        new_mean.append([new1, new2])
-                else:
-                    if self.reification:
-                        new_mean = []
-                        # obtain predictions from the low-order GPs
-                        for iii in range(len(self.ROM)):
-                            new, var = self.reificationObj.predict_low_order(x_test, iii)
-                            new_mean.append(new)
-                    else:
-                        new_mean, var = self.modelGP.predict_var(x_test)
-                # Calculate the Acquisition Function for each of the test points in each
-                # model for each set of hyperparameters
-                
-                if self.acquisitionFunc == "Hedge":
-                    kg_output, process_cost = self.__gpHedgeApproach(x_test, new_mean, calcPerProcess)
-                else:
-                    kg_output, process_cost = self.__singleAcqFuncApproach(x_test, new_mean, calcPerProcess)
-                
-                kg_output = np.array(kg_output, dtype=object)
-                
-                # Cluster the acquisition function output
-                medoid_out = self.__kg_calc_clustering(kg_output)
-                
-                
-                model_cost = time()-self.timeCheck + process_cost
-                self.timeCheck = time()
-                
-                # Call the reduced order models
-                temp_x, temp_y, temp_index, costs, count, check = self.__call_ROM(medoid_out, x_test[medoid_out[:,2].astype(int),:])
-                
-                if check != 0:
-                    self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+                        if self.reification:
+                            new_mean = []
+                            # obtain predictions from the low-order GPs
+                            for iii in range(len(self.ROM)):
+                                new, var = self.reificationObj.predict_low_order(x_test, iii)
+                                new_mean.append(new)
+                        else:
+                            new_mean, var = self.modelGP.predict_var(x_test)
+                    # Calculate the Acquisition Function for each of the test points in each
+                    # model for each set of hyperparameters
                     
                     if self.acquisitionFunc == "Hedge":
-                        self.__update_Hedge_Probabilities("ROM", x_test)
+                        kg_output, process_cost = self.__gpHedgeApproach(x_test, new_mean, calcPerProcess)
+                    else:
+                        kg_output, process_cost = self.__singleAcqFuncApproach(x_test, new_mean, calcPerProcess)
+                    
+                    kg_output = np.array(kg_output, dtype=object)
+                    
+                    # Cluster the acquisition function output
+                    medoid_out = self.__kg_calc_clustering(kg_output)
+                    
+                    
+                    model_cost = time()-self.timeCheck + process_cost
+                    self.timeCheck = time()
+                    
+                    if not self.externalROM:
+                        # Call the reduced order models
+                        temp_x, temp_y, temp_index, costs, count, check = self.__call_ROM(medoid_out, x_test[medoid_out[:,2].astype(int),:])
+                    
+                        if check != 0:
+                            self.__add_to_evaluatedPoints(temp_index, temp_x, temp_y)
+                            
+                            if self.acquisitionFunc == "Hedge":
+                                self.__update_Hedge_Probabilities("ROM", x_test)
+                        else:
+                            self.logger.critical("All ROM Evalutions Failed to produce a result! Continue with no new data")
+                    else:
+                        self.__external_ROM_data_save(medoid_out, x_test[medoid_out[:,2].astype(int),:])
+                        # Set up external ROM
+                        self.ROM_Calc_Start = False
+                        self.__save_calculation_state()
+                        sleep(10)
+                        raise RuntimeWarning("Framework Shut Down to Facilitate External ROM Calculations!")
                 else:
-                    self.logger.critical("All ROM Evalutions Failed to produce a result! Continue with no new data")
-
+                    temp_x, temp_y, temp_index, costs, count, check = self.__external_ROM_data_load(medoid_out, x_test[medoid_out[:,2].astype(int),:])
+                    # Extract external ROM Data
+                    self.ROM_Calc_Start = True
+                    
                 self.totalBudgetLeft -= np.sum(costs) + model_cost
                 self.tmBudgetLeft -= np.sum(costs) + model_cost
                 self.logger.info("ROM Function Evaluations Completed")
@@ -2343,8 +2386,12 @@ class barefoot():
         outputData = np.zeros((len(TMEvaluationPoints), self.nDim+1))
         for ii in range(len(TMEvaluationPoints)):
             outputData[ii,0:self.nDim] = TMEvaluationPoints[ii]["Input Values"]
-            
-        colNames = self.inputLabels.append("y")
+        colNames = deepcopy(self.inputLabels) 
+        if self.multiObjective:
+            colNames.append("y1")
+            colNames.append("y2")
+        else:
+            colNames.append("y")
         outputData = pd.DataFrame(outputData, columns=colNames)
         outputData.to_csv('{}/results/{}/TruthModelEvaluationPoints.csv'.format(self.workingDir, 
                                                                                 self.calculationName))
@@ -2352,7 +2399,28 @@ class barefoot():
             dump(count, f)
         self.__save_calculation_state()
         self.logger.critical("Truth Model Evaluation Points Copied to File | Restart Process when results are ready")
-    
+        
+    def __external_ROM_data_save(self, medoid_out, x_val):
+        # Define the parameter sets needed for each calculation
+        self.logger.debug("Define Parameters for ROM Function Evaluations")
+        output = np.zeros((medoid_out.shape[0], self.nDim+2))
+        
+        for iii in range(medoid_out.shape[0]):
+            output[iii,0:self.nDim] = x_val[iii,:]
+            output[iii,self.nDim] = medoid_out[iii,3]
+            output[iii,self.nDim+1] = 0
+            
+        colNames = deepcopy(self.inputLabels)
+        colNames.append("Model Index")
+        if self.multiObjective:
+            colNames.append("y1")
+            colNames.append("y2")
+        else:
+            colNames.append("y")
+        outputData = pd.DataFrame(output, columns=colNames)
+        outputData.to_csv('{}/results/{}/ROMEvaluationPoints.csv'.format(self.workingDir, 
+                                                                                self.calculationName))
+
     def __external_TM_data_load(self, workingDir, calculationName):
         # When restarting the framework after using an external Truth Model
         # the data from the model must be loaded into the framework
@@ -2405,6 +2473,49 @@ class barefoot():
         self.currentIteration += 1
         self.tmIterCount += 1
         self.logger.info("Finished Loading External TM Data")
+    
+    def __external_ROM_data_load(self):
+        count = np.zeros((len(self.ROM)+1)) 
+        if self.multiObjective:
+            current = np.array(self.iterationData.iloc[:,4:5+len(self.ROM)])[-1,:]
+        else:
+            current = np.array(self.iterationData.iloc[:,3:])[-1,:]
+        count[0:len(self.ROM)] = current[1:]
+        count[-1] = current[0]
+        
+        ROMData = pd.read_csv('{}/results/{}/ROMEvaluationPoints.csv'.format(self.workingDir, 
+                                                                             self.calculationName))
+        ROMData = np.array(ROMData)
+        
+
+        temp_x = np.zeros((ROMData.shape[0], self.nDim))
+        if self.multiObjective:
+            temp_y = np.zeros((ROMData.shape[0],2))
+        else:
+            temp_y = np.zeros(ROMData.shape[0])
+        temp_index = np.zeros(ROMData.shape[0]) 
+        costs = np.zeros(ROMData.shape[0])
+        # Run the concurrent calculations and extract the results
+        self.logger.info("ROM Function Evaluations Completed | {} Calculations".format(ROMData.shape[0]))
+        
+        for ii in range(ROMData.shape[0]):
+            costs[ii] += self.modelCosts[ROMData[ii,(self.nDim)]]
+            if self.multiObjective:
+                results = self.goal*ROMData[ii,(self.nDim+1):]
+            else:
+                results = self.goal*ROMData[ii,(self.nDim+1)]
+            temp_y[ii,:] = results
+            temp_x[ii,:] = ROMData[ii,0:(self.nDim)]
+            temp_index[ii] = ROMData[ii,(self.nDim)]
+            if self.multiObjective:
+                self.reificationObj[0].update_GP(temp_x[ii,:], results[0,0], ROMData[ii,(self.nDim)])
+                self.reificationObj[1].update_GP(temp_x[ii,:], results[0,1], ROMData[ii,(self.nDim)])
+            else:
+                self.reificationObj.update_GP(temp_x[ii,:], results, ROMData[ii,(self.nDim)])
+            
+            count[ROMData[ii,(self.nDim)]] += 1
+        
+        return temp_x, temp_y, temp_index, costs, count, ROMData.shape[0]
         
         
 

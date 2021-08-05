@@ -920,36 +920,37 @@ def batchAcquisitionFunc(param):
     xi = 0.01
     iteration, x_test, fusedModelHP, curr_max, acqFunc, extra = data[param[0]]
     
-    if type(modelGP) == list:
-        modelGP[0].l_param = fusedModelHP[1:]
-        modelGP[0].sigma_f = fusedModelHP[0]
-        modelGP[0].kk = modelGP[0].create_kernel()
-        modelGP[0].gp = modelGP[0].create_gp()
-        modelGP[1].l_param = fusedModelHP[1:]
-        modelGP[1].sigma_f = fusedModelHP[0]
-        modelGP[1].kk = modelGP[1].create_kernel()
-        modelGP[1].gp = modelGP[1].create_gp()
-        pareto, goal, ref = extra
-        means = np.zeros((x_test.shape[0], 2))
-        sigmas = np.zeros((x_test.shape[0], 2))
-        
-        m1, v1 = modelGP[0].predict_cov(x_test)
-        m2, v2 = modelGP[1].predict_cov(x_test)
-        
-        means[:,0] = m1
-        means[:,1] = m2
-        sigmas[:,0] = np.sqrt(np.diag(v1))
-        sigmas[:,1] = np.sqrt(np.diag(v2))
-        
-        N_obj = 2 ## number of objectives
-        
-        
+    if acqFunc == "EI-BMARS":
+        pass
     else:
-        modelGP.l_param = fusedModelHP[1:]
-        modelGP.sigma_f = fusedModelHP[0]
-        modelGP.kk = modelGP.create_kernel()
-        modelGP.gp = modelGP.create_gp()
-        fused_mean, fused_var = modelGP.predict_cov(x_test)
+        if type(modelGP) == list:
+            modelGP[0].l_param = fusedModelHP[1:]
+            modelGP[0].sigma_f = fusedModelHP[0]
+            modelGP[0].kk = modelGP[0].create_kernel()
+            modelGP[0].gp = modelGP[0].create_gp()
+            modelGP[1].l_param = fusedModelHP[1:]
+            modelGP[1].sigma_f = fusedModelHP[0]
+            modelGP[1].kk = modelGP[1].create_kernel()
+            modelGP[1].gp = modelGP[1].create_gp()
+            pareto, goal, ref = extra
+            means = np.zeros((x_test.shape[0], 2))
+            sigmas = np.zeros((x_test.shape[0], 2))
+            
+            m1, v1 = modelGP[0].predict_cov(x_test)
+            m2, v2 = modelGP[1].predict_cov(x_test)
+            
+            means[:,0] = m1
+            means[:,1] = m2
+            sigmas[:,0] = np.sqrt(np.diag(v1))
+            sigmas[:,1] = np.sqrt(np.diag(v2))
+            
+            N_obj = 2 ## number of objectives
+        else:
+            modelGP.l_param = fusedModelHP[1:]
+            modelGP.sigma_f = fusedModelHP[0]
+            modelGP.kk = modelGP.create_kernel()
+            modelGP.gp = modelGP.create_gp()
+            fused_mean, fused_var = modelGP.predict_cov(x_test)
     
     if acqFunc == "EHVI":
         # ## Turn the problem into minimizing for all objectives:
@@ -1112,6 +1113,8 @@ def batchAcquisitionFunc(param):
                                     fused_mean, 
                                     fused_var)
         output.append([nu, x])
+    elif acqFunc == "EI-BMARS":
+        pass
     else:
         """
         Greedy Sampling Approach
