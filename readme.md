@@ -76,3 +76,5 @@ For more information on the methods used in this framework, please see our publi
 
 1. Couperthwaite, Richard, Abhilash Molkeri, Danial Khatamsaz, Ankit Srivastava, Douglas Allaire, and Raymundo Arroyave. “Materials Design Through Batch Bayesian Optimization with Multisource Information Fusion.” JOM, October 13, 2020. https://doi.org/10.1007/s11837-020-04396-x.
 
+Alternatively, a tutorial on the framework was presented through NanoHub (https://nanohub.org). The Tutorial is available online: https://nanohub.org/resources/35143
+
