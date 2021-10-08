@@ -80,4 +80,5 @@ Alternatively, a tutorial on the framework was presented through NanoHub (https:
 
 ## Code Developers
 Richard Couperthwaite: richard.couperthwaite@gmail.com
+
 Brent Vela: brentvela@tamu.edu
