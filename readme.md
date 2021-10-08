@@ -78,3 +78,6 @@ For more information on the methods used in this framework, please see our publi
 
 Alternatively, a tutorial on the framework was presented through NanoHub (https://nanohub.org). The Tutorial is available online: https://nanohub.org/resources/35143
 
+## Code Developers
+Richard Couperthwaite: richard.couperthwaite@gmail.com
+Brent Vela: brentvela@tamu.edu
